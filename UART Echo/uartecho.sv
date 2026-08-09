@@ -11,18 +11,23 @@ always_ff @(posedge clk)
     end
 
 always_ff @(posedge clk)
-    if (send) Busy <= 1;
-    else if (~Busy) Index <= 0;
-    else if (Count == 867)
     begin
-        if (Index == 9)
+        if (send) Busy <= 1;
+        if (Busy)
         begin
-            Index <= 0;
-            Busy <= 0;
+            if (Count == 867)
+            begin
+                if (Index == 9)
+                begin
+                    Busy <= 0;
+                    Index <= 0;
+                end
+                else Index <= Index + 1;
+            end
         end
-        else if (Busy) Index <= Index + 1;
+        else if (~Busy) Index <= 0;
+        else Index <= Index;
     end
-    else Index <= Index;
 
 always_comb
     case (Busy)
