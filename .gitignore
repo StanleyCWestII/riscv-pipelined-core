@@ -1,0 +1,15 @@
+# simulation binaries
+sim
+*.vcd
+*.out
+
+# Vivado project artifacts
+uartproj.cache/
+uartproj.hw/
+uartproj.sim/
+uartproj.runs/
+uartproj.ip_user_files/
+*.jou
+*.log
+*.str
+.Xil/
