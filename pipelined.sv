@@ -1,4 +1,4 @@
-module pipelined(input logic clk, reset, RxValid, TxBusy, TxSend, TxByte, input logic [7:0] RxData);
+module pipelined(input logic clk, reset, RxValid, TxBusy, input logic [7:0] RxData, output logic TxSend, output logic [7:0] TxByte);
 
 // Control Unit declarations
 logic [6:0] Op;
@@ -290,6 +290,10 @@ always_ff @(posedge clk)
 
 always_ff @(posedge clk)
     if (MemWriteM && ~ALUResultM[10]) DataMem[ALUResultM[7:2]] <= WDM;
+
+// UART Echo logic
+assign TxSend = MemWriteM && ALUResultM[10] && (ALUResultM[3:2] == 2'b00);
+assign TxByte = WDM[7:0];
 
 // Memory --> Writeback Register
 always_ff @(posedge clk, posedge reset)
