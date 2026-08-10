@@ -1,13 +1,9 @@
 module receiver(input logic rx, clk, output logic [7:0] Data, output logic Valid);
 
-logic Busy;
-logic Sync1 = 1, Sync2 = 1;   // idle high, same as the line
+logic Busy = 0, Sync1 = 1, Sync2 = 1;
 logic [3:0] Index = 0;
 logic [9:0] Count = 0, Storage;
 
-// rx is driven by the PC's clock, not ours, so it can change at any instant
-// relative to our clock edge. Two flops let any metastable value settle before
-// the rest of the design sees it. Everything below samples Sync2, never rx.
 always_ff @(posedge clk)
     begin
         Sync1 <= rx;

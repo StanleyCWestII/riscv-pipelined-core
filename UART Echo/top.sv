@@ -1,15 +1,9 @@
-module top(input logic CLK100MHZ, Button, output logic UART_RXD_OUT);
+module top(input logic CLK100MHZ, Button, UART_TXD_IN, output logic UART_RXD_OUT);
 
-logic ButtonNow, ButtonPast, Press;
+logic Valid;
+logic [7:0] Data;
 
-always_ff @(posedge CLK100MHZ)
-begin
-    ButtonNow <= Button;
-    ButtonPast <= ButtonNow;
-end
-
-assign Press = ButtonNow & ~ButtonPast;
-
-uartecho tx_unit(.clk(CLK100MHZ), .Input(10'b1010000010), .Send(Press), .tx(UART_RXD_OUT));
+uartecho tx_unit(.clk(CLK100MHZ), .Input({1'b1, Data, 1'b0}), .Send(Valid), .tx(UART_RXD_OUT));
+receiver rx_unit(.clk(CLK100MHZ), .rx(UART_TXD_IN), .Valid(Valid), .Data(Data));
 
 endmodule
