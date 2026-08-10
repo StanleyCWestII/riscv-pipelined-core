@@ -284,8 +284,9 @@ always_comb
         1'b0: RDM = DataMem[ALUResultM[7:2]];
     endcase
 
-always_ff @(posedge clk)
-    if (RxValid) RxReady <= 1;
+always_ff @(posedge clk, posedge reset)
+    if (reset) RxReady <= 0;
+    else if (RxValid) RxReady <= 1;
     else if (ALUResultM[10] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
 
 always_ff @(posedge clk)
