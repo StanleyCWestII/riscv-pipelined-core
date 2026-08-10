@@ -1,4 +1,4 @@
-# Constraints for top.sv, rung 1 UART transmitter, Nexys A7-100T
+# Constraints for top.sv, UART echo through the pipelined core, Nexys A7-100T
 # Pins copied from the Digilent Nexys-A7-100T master XDC.
 
 # 100 MHz system clock
@@ -11,5 +11,7 @@ set_property -dict { PACKAGE_PIN D4    IOSTANDARD LVCMOS33 } [get_ports { UART_R
 # USB-UART, data arriving at the FPGA from the PC. Idles high.
 set_property -dict { PACKAGE_PIN C4    IOSTANDARD LVCMOS33 } [get_ports { UART_TXD_IN }];
 
-# BTNC, the center pushbutton. Active high: reads 0 idle, 1 while pressed.
-set_property -dict { PACKAGE_PIN N17   IOSTANDARD LVCMOS33 } [get_ports { Button }];
+# BTNC, the center pushbutton, drives the processor reset.
+# Active high: reads 0 idle, 1 while pressed, which matches the posedge reset
+# in pipelined.sv. Press and release to restart the core.
+set_property -dict { PACKAGE_PIN N17   IOSTANDARD LVCMOS33 } [get_ports { Reset }];
