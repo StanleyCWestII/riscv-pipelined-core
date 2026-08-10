@@ -2,16 +2,14 @@ module receiver(input logic rx, clk, output logic [7:0] Data, output logic Valid
 
 logic Busy;
 logic [3:0] Index = 0;
-logic [9:0] Count = 0, InputNext, Storage;
-
-always_ff @(posedge clk)
-    if (~Busy && ~rx) InputNext <= Input;
+logic [9:0] Count = 0, Storage;
 
 always_ff @(posedge clk)
     begin
         if (Index == 0)
         begin
-            if (Count == 1301) Count <= Count + 1;
+            if (Count == 1301 | ~Busy) Count <= 1'b0;
+            else Count <= Count + 1;
         end
         else if ((Count == 867) | ~Busy) Count <= 0;
         else if (Busy) Count <= Count + 1;
@@ -36,16 +34,14 @@ always_ff @(posedge clk)
         else Index <= Index;
     end
 
-always_comb
-    case (Busy)
-        1'b0: rx = 1;
-        1'b1: Storage[Index] = InputNext[Index];
-    endcase
-
 always_ff @(posedge clk)
-    if (Index == 9) Valid <= 1'b1;
+    if (Busy && Count == 867 && Index == 7) Valid <= 1'b1;
     else Valid <= 1'b0;
 
-assign rx = Storage;
+always_ff @(posedge clk)
+    if (Busy && Count == 1301) Storage[Index] <= rx;
+    else if (Busy && Count == 867) Storage[Index] <= rx;
+
+assign Data = Storage[7:0];
 
 endmodule
