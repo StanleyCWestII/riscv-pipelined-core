@@ -1,4 +1,4 @@
-module pipelined(input logic clk, reset);
+module pipelined(input logic clk, reset, RxValid, TxBusy, TxSend, TxByte, input logic [7:0] RxData);
 
 // Control Unit declarations
 logic [6:0] Op;
@@ -52,6 +52,9 @@ logic [31:0] RD2EI;
 logic [4:0] A1E, A2E;
 logic [1:0] ForwardAE, ForwardBE;
 logic StallF, StallD, FlushE, FlushD, lwStall, ReadsRS1, ReadsRS2;
+
+// UART Echo declarations
+logic RxReady;
 
 // Control Unit logic
 assign Op = InstrD[6:0];
@@ -267,10 +270,26 @@ always_ff @(posedge clk, posedge reset)
     end
 
 // Data Memory logic
-assign RDM = DataMem[ALUResultM[7:2]];
+always_comb
+    case (ALUResultM[10])
+        1'b1:
+        begin
+            case (ALUResultM[3:2])
+            2'b00: RDM = 0;
+            2'b01: RDM = {30'b0, RxReady, TxBusy};
+            2'b10: RDM = {24'b0, RxData};
+            default: RDM = 0;
+            endcase
+        end
+        1'b0: RDM = DataMem[ALUResultM[7:2]];
+    endcase
 
 always_ff @(posedge clk)
-    if (MemWriteM) DataMem[ALUResultM[7:2]] <= WDM;
+    if (RxValid) RxReady <= 1;
+    else if (ALUResultM[10] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
+
+always_ff @(posedge clk)
+    if (MemWriteM && ~ALUResultM[10]) DataMem[ALUResultM[7:2]] <= WDM;
 
 // Memory --> Writeback Register
 always_ff @(posedge clk, posedge reset)
