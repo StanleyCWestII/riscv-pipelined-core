@@ -1,13 +1,25 @@
-# Rung 1 UART transmitter: create project, build, program.
+# UART echo through the pipelined core: create project, build, program.
 # Paste into the Vivado Tcl console. Safe to re-run; it deletes and rebuilds the project dir.
 
-set srcdir "/home/scw/Files/Programming/DDCA/Chapter 7/pipelinedproject/UART Echo"
+set srcdir  "/home/scw/Files/Programming/DDCA/Chapter 7/pipelinedproject/UART Echo"
+set coredir "/home/scw/Files/Programming/DDCA/Chapter 7/pipelinedproject"
 set projdir "$srcdir/uartproj"
 
 file delete -force $projdir
 create_project uartproj $projdir -part xc7a100tcsg324-1 -force
 
-add_files [list "$srcdir/uartecho.sv" "$srcdir/top.sv"]
+# top.sv instantiates uartecho, receiver, and pipelined. All four must be here
+# or the missing ones synthesize as empty black boxes.
+add_files [list "$srcdir/top.sv" \
+                "$srcdir/uartecho.sv" \
+                "$srcdir/receiver.sv" \
+                "$coredir/pipelined.sv"]
+
+# pipelined.sv does $readmemh("memory.hex", InstrMem) with a relative path.
+# Adding the hex to the project is what lets synthesis find it. Assemble it first:
+#   python3 asm.py echo.s memory.hex
+add_files [list "$coredir/memory.hex"]
+
 add_files -fileset constrs_1 [list "$srcdir/top.xdc"]
 set_property top top [current_fileset]
 update_compile_order -fileset sources_1
