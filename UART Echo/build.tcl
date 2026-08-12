@@ -11,7 +11,11 @@ create_project uartproj $projdir -part xc7a100tcsg324-1 -force
 
 # top.sv instantiates uartecho, receiver, pipelined, and vgapatterngenerator.
 # All five must be here or the missing ones synthesize as empty black boxes.
-add_files [list "$srcdir/top.sv" \
+#
+# top.sv lives in the VGA directory, not here. The old pre-VGA copy that used
+# to sit beside this script was deleted in the integration commit; if it ever
+# comes back, both files declare "module top" and Vivado will pick one.
+add_files [list "$vgadir/top.sv" \
                 "$srcdir/uartecho.sv" \
                 "$srcdir/receiver.sv" \
                 "$coredir/pipelined.sv" \
