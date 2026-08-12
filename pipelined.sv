@@ -1,4 +1,4 @@
-module pipelined(input logic clk, reset, RxValid, TxBusy, input logic [7:0] RxData, output logic TxSend, output logic [7:0] TxByte);
+module pipelined(input logic clk, reset, RxValid, TxBusy, input logic [7:0] RxData, output logic TxSend, output logic [7:0] TxByte, output logic [11:0] VGAReg);
 
 // Control Unit declarations
 logic [6:0] Op;
@@ -64,11 +64,17 @@ assign Funct7 = InstrD[30];
 // Main Decoder
 always_comb
     case (Op)
+    // lw
     7'b0000011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_00_1_0_01_0_00_0_1_0;
+    // sw
     7'b0100011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b0_01_1_1_00_0_00_0_1_1;
+    // R-type
     7'b0110011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_xx_0_0_00_0_10_0_1_1;
+    // beq
     7'b1100011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b0_10_0_0_00_1_01_0_1_1;
+    // I-type ALU
     7'b0010011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_00_1_0_00_0_10_0_1_0;
+    // jal
     7'b1101111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_11_1_0_10_0_00_1_0_0;
     default: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b0_00_0_0_00_0_00_0_1_0;
 endcase
@@ -278,11 +284,19 @@ always_comb
             2'b00: RDM = 0;
             2'b01: RDM = {30'b0, RxReady, TxBusy};
             2'b10: RDM = {24'b0, RxData};
+            2'b11: RDM = {20'b0, VGAReg};
             default: RDM = 0;
             endcase
         end
         1'b0: RDM = DataMem[ALUResultM[7:2]];
     endcase
+
+// VGA logic
+always_ff @(posedge clk, posedge reset)
+begin
+    if (reset) VGAReg <= 0;
+    else if ((ALUResultM[3:2] == 2'b11) && (ALUResultM[10]) && (MemWriteM == 1'b1)) VGAReg <= WDM[11:0];
+end
 
 always_ff @(posedge clk, posedge reset)
     if (reset) RxReady <= 0;

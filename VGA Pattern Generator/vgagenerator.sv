@@ -1,4 +1,4 @@
-module vgapatterngenerator(input logic clk, reset, output logic Hsync, Vsync, output logic [3:0] Red, Green, Blue);
+module vgapatterngenerator(input logic clk, reset, input logic [11:0] BgColor, output logic Hsync, Vsync, output logic [3:0] Red, Green, Blue);
 
 logic [9:0] Horizontal, Vertical;
 logic [1:0] clkEnable;
@@ -26,7 +26,7 @@ always_ff @(posedge clk, posedge reset)
     else clkEnable <= clkEnable + 1;
 
 // walks the screen in the horizontal and vertical directions
-always_ff @(posedge clk)
+always_ff @(posedge clk, posedge reset)
     begin
         if (reset)
         begin
@@ -63,7 +63,7 @@ always_comb
         else if (Horizontal < 400) {Red, Green, Blue} = 12'hF0F;
         else if (Horizontal < 480) {Red, Green, Blue} = 12'hF00;
         else if (Horizontal < 560) {Red, Green, Blue} = 12'h00F;
-        else {Red, Green, Blue} = 12'h000;
+        else {Red, Green, Blue} = BgColor;
     end
 
 endmodule

@@ -1,23 +1,26 @@
-# UART echo through the pipelined core: create project, build, program.
+# UART echo + VGA through the pipelined core: create project, build, program.
 # Paste into the Vivado Tcl console. Safe to re-run; it deletes and rebuilds the project dir.
 
-set srcdir  "/home/scw/Files/Programming/DDCA/Chapter 7/pipelinedproject/UART Echo"
-set coredir "/home/scw/Files/Programming/DDCA/Chapter 7/pipelinedproject"
+set srcdir  "/home/christopher/Files/Programming/DDCA/Chapter 7/pipelinedproject/UART Echo"
+set coredir "/home/christopher/Files/Programming/DDCA/Chapter 7/pipelinedproject"
+set vgadir  "$coredir/VGA Pattern Generator"
 set projdir "$srcdir/uartproj"
 
 file delete -force $projdir
 create_project uartproj $projdir -part xc7a100tcsg324-1 -force
 
-# top.sv instantiates uartecho, receiver, and pipelined. All four must be here
-# or the missing ones synthesize as empty black boxes.
+# top.sv instantiates uartecho, receiver, pipelined, and vgapatterngenerator.
+# All five must be here or the missing ones synthesize as empty black boxes.
 add_files [list "$srcdir/top.sv" \
                 "$srcdir/uartecho.sv" \
                 "$srcdir/receiver.sv" \
-                "$coredir/pipelined.sv"]
+                "$coredir/pipelined.sv" \
+                "$vgadir/vgagenerator.sv"]
 
 # pipelined.sv does $readmemh("memory.hex", InstrMem) with a relative path.
-# Adding the hex to the project is what lets synthesis find it. Assemble it first:
-#   python3 asm.py echo.s memory.hex
+# Adding the hex to the project is what lets synthesis find it. Assemble first:
+#   python3 asm.py vgatest.s memory.hex     (VGA demo)
+#   python3 asm.py echo.s    memory.hex     (UART echo)
 add_files [list "$coredir/memory.hex"]
 
 add_files -fileset constrs_1 [list "$srcdir/top.xdc"]
@@ -27,7 +30,8 @@ update_compile_order -fileset sources_1
 launch_runs impl_1 -to_step write_bitstream -jobs 8
 wait_on_run impl_1
 
-# check nothing was optimized away before touching the board
+# Check nothing was optimized away before touching the board. If the VGA
+# generator's counters are missing here, BgColor is probably unconnected.
 open_run impl_1
 report_utilization -name util_1
 

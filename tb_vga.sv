@@ -35,8 +35,14 @@ module tb_vga;
     logic       Hsync, Vsync;
     logic [3:0] Red, Green, Blue;
 
+    // BgColor is tied to black here on purpose. This bench verifies VESA
+    // timing, sync polarity, and blanking with the generator standalone, so
+    // bar 8 is held at the constant it had before it became programmable and
+    // all nine original checks keep their original meaning. The CPU-driven
+    // path is covered separately by tb_top.sv.
     vgapatterngenerator dut (
         .clk(clk), .reset(reset),
+        .BgColor(12'h000),
         .Hsync(Hsync), .Vsync(Vsync),
         .Red(Red), .Green(Green), .Blue(Blue)
     );
