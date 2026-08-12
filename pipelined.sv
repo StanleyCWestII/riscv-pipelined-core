@@ -12,8 +12,8 @@ logic [1:0] ImmSrcD, ResultSrcD;
 logic MemWriteD, ALUSrcD, RegWriteD, BranchD, JumpD;
 // Execute Control
 logic [2:0] ALUControlE;
-logic [1:0] ResultSrcE;
-logic MemWriteE, ALUSrcE, RegWriteE, BranchE, JumpE, ZeroE, PCSrcE;
+logic [1:0] ResultSrcE, PCSrcE;
+logic MemWriteE, ALUSrcE, RegWriteE, BranchE, JumpE, ZeroE;
 // Memory Control
 logic [1:0] ResultSrcM;
 logic MemWriteM, RegWriteM;
@@ -55,6 +55,10 @@ logic StallF, StallD, FlushE, FlushD, lwStall, ReadsRS1, ReadsRS2;
 
 // UART Echo declarations
 logic RxReady;
+
+// Branch Prediction declarations
+logic isBranchF, isBranchD, isBranchE, MisPredict;
+logic [31:0] PCTargetF;
 
 // Control Unit logic
 assign Op = InstrD[6:0];
@@ -110,7 +114,14 @@ always_comb
         default: ZeroE = 1'b0;
     endcase
 
-assign PCSrcE = (BranchE & ZeroE) | JumpE;
+assign MisPredict = ZeroE ^ isBranchE;
+
+always_comb
+begin
+	if ((BranchE & MisPredict) | JumpE) PCSrcE = 2'b01;
+	else if (isBranchF) PCSrcE = 2'b10;
+	else PCSrcE = 2'b00;
+end
 
 // Program Counter logic
 always_ff @(posedge clk, posedge reset)
@@ -118,16 +129,30 @@ always_ff @(posedge clk, posedge reset)
     else if (~StallF) PCF <= PCFNext;
 
 assign PCPlus4F = PCF + 4;
+assign PCTargetF = PCF + {{20{InstrF[31]}}, InstrF[7], InstrF[30:25], InstrF[11:8], 1'b0};
 
 always_comb
     case (PCSrcE)
-        1'b0: PCFNext = PCPlus4F;
-        default: PCFNext = PCTargetE;
+        2'b00: PCFNext = PCPlus4F;
+        2'b01:
+        begin
+            if (isBranchE == 1'b1 && ZeroE == 1'b0) PCFNext = PCPlus4E;
+            else PCFNext = PCTargetE;
+        end
+        2'b10: PCFNext = PCTargetF;
+        default: PCFNext = PCPlus4F;
     endcase
 
 // Instruction Memory logic
 initial $readmemh("memory.hex", InstrMem);
 assign InstrF = InstrMem[PCF[7:2]];
+
+// Branch Prediction logic
+always_comb
+begin
+	if (InstrF[6:0] == 7'b1100011) isBranchF = 1;
+	else isBranchF = 0;
+end
 
 // Fetch --> Decode Register
 always_ff @(posedge clk, posedge reset)
@@ -136,12 +161,14 @@ always_ff @(posedge clk, posedge reset)
         InstrD <= 0;
         PCD <= 0;
         PCPlus4D <= 0;
+        isBranchD <= 0;
     end
     else if (~StallD)
     begin
         InstrD <= InstrF;
         PCD <= PCF;
         PCPlus4D <= PCPlus4F;
+        isBranchD <= isBranchF;
     end
 
 // Register Memory logic
@@ -180,6 +207,7 @@ always_ff @(posedge clk, posedge reset)
         ALUSrcE <= 0;
         A1E <= 0;
         A2E <= 0;
+        isBranchE <= 0;
     end
     else
     begin
@@ -198,6 +226,7 @@ always_ff @(posedge clk, posedge reset)
         ALUSrcE <= ALUSrcD;
         A1E <= A1D;
         A2E <= A2D;
+        isBranchE <= isBranchD;
     end
 
 // HAZARD
