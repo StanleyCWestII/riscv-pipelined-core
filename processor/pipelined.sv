@@ -52,7 +52,7 @@ logic [31:0] RD2EI;
 logic [4:0] A1E, A2E;
 logic [1:0] ForwardAE, ForwardBE;
 logic StallF, StallD, FlushE, FlushD, lwStall, ReadsRS1, ReadsRS2,
-StallE, StallM, FlushW;
+StallE, StallM, StallW;
 
 // UART Echo declarations
 logic RxReady;
@@ -192,7 +192,7 @@ always_comb
     case (CacheState)
         Idle:
         begin
-            MemStall = 0;
+            MemStall = Miss;
             CacheNextState = Miss ? Fetch : Idle;
         end
         Fetch:
@@ -429,7 +429,12 @@ always_ff @(posedge clk, posedge reset)
     else if (ALUResultM[10] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
 
 always_ff @(posedge clk)
-    if (MemWriteM && ~ALUResultM[10]) DataMem[ALUResultM[9:2]] <= WDM;
+    begin
+        if (MemWriteM && ~ALUResultM[10])
+        DataMem[ALUResultM[9:2]] <= WDM;
+        if (MemWriteM && ~ALUResultM[10] && Hit)
+        DCache[ALUResultM[7:4]][ALUResultM[3:2]] <= WDM;
+    end
 
 // UART Echo logic
 assign TxSend = MemWriteM && ALUResultM[10] && (ALUResultM[3:2] == 2'b00);
@@ -437,7 +442,7 @@ assign TxByte = WDM[7:0];
 
 // Memory --> Writeback Register
 always_ff @(posedge clk, posedge reset)
-    if (reset || FlushW)
+    if (reset)
     begin
         RDW <= 0;
         ALUResultW <= 0;
@@ -446,7 +451,7 @@ always_ff @(posedge clk, posedge reset)
         RegWriteW <= 0;
         ResultSrcW <= 0;
     end
-    else
+    else if (~StallW)
     begin
         RDW <= RDM;
         ALUResultW <= ALUResultM;
@@ -492,5 +497,5 @@ assign StallE = MemStall;
 assign StallM = MemStall;
 assign FlushD = (PCSrcE == 2'b01) && ~MemStall;
 assign FlushE = (lwStall || (PCSrcE == 2'b01)) && ~MemStall;
-assign FlushW = StallM;
+assign StallW = MemStall;
 endmodule
