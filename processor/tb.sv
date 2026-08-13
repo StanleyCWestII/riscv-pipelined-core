@@ -187,7 +187,7 @@ module tb;
         $display("");
 
         // -------------------------------------------------- T1: I-type ALU
-        run_program("T1 I-type", "tests/t1_itype.hex", 40);
+        run_program("T1 I-type", "processor/tests/t1_itype.hex", 40);
         check_reg( 1, 32'h0000_0005);
         check_reg( 2, 32'hFFFF_FFFD);   // sign-extended -3
         check_reg( 3, 32'h0000_07FF);   // largest positive immediate
@@ -202,7 +202,7 @@ module tb;
         report();
 
         // -------------------------------------------------- T2: R-type ALU
-        run_program("T2 R-type", "tests/t2_rtype.hex", 40);
+        run_program("T2 R-type", "processor/tests/t2_rtype.hex", 40);
         check_reg( 3, 32'h0000_0016);   // add  12 + 10
         check_reg( 4, 32'h0000_0002);   // sub  12 - 10
         check_reg( 5, 32'h0000_0008);   // and
@@ -216,7 +216,7 @@ module tb;
         report();
 
         // ----------------------------------------------- T3: loads / stores
-        run_program("T3 load/store", "tests/t3_loadstore.hex", 40);
+        run_program("T3 load/store", "processor/tests/t3_loadstore.hex", 40);
         check_reg( 3, 32'h0000_002A);   // 42
         check_reg( 4, 32'h0000_0063);   // 99
         check_reg( 6, 32'h0000_0008);
@@ -229,7 +229,7 @@ module tb;
         report();
 
         // ------------------------------------------------ T4: load-use stall
-        run_program("T4 load-use", "tests/t4_loaduse.hex", 50);
+        run_program("T4 load-use", "processor/tests/t4_loaduse.hex", 50);
         check_reg( 2, 32'h0000_0007);
         check_reg( 3, 32'h0000_000E);   // stall then forward into R-type
         check_reg( 5, 32'h0000_0008);   // stall then forward into I-type
@@ -241,7 +241,7 @@ module tb;
         report();
 
         // --------------------------------------------------- T5: branches
-        run_program("T5 branch", "tests/t5_branch.hex", 50);
+        run_program("T5 branch", "processor/tests/t5_branch.hex", 50);
         check_reg( 4, 32'h0000_0001);
         check_reg( 5, 32'h0000_0002);   // not-taken path must execute
         check_reg( 6, 32'h0000_0003);
@@ -252,7 +252,7 @@ module tb;
         report();
 
         // -------------------------------------------------------- T6: jal
-        run_program("T6 jal", "tests/t6_jal.hex", 40);
+        run_program("T6 jal", "processor/tests/t6_jal.hex", 40);
         check_reg( 2, 32'h0000_0008);   // link = address of jal + 4
         check_reg( 3, 32'h0000_0008);   // link used at the target, forwarded
         check_reg( 5, 32'h0000_000C);   // link + 4, still close behind the jal
@@ -263,7 +263,7 @@ module tb;
         report();
 
         // ------------------------------------------- T7: forwarding distance
-        run_program("T7 forwarding", "tests/t7_forward.hex", 50);
+        run_program("T7 forwarding", "processor/tests/t7_forward.hex", 50);
         check_reg( 2, 32'h0000_0006);   // distance 1, forward from M
         check_reg( 4, 32'h0000_0006);   // distance 2, forward from W
         check_reg( 6, 32'h0000_0006);   // distance 3, negedge regfile write
@@ -273,7 +273,7 @@ module tb;
         report();
 
         // ------------------------------- T8: backward loop + SLT overflow
-        run_program("T8 loop/overflow", "tests/t8_loop.hex", 400);
+        run_program("T8 loop/overflow", "processor/tests/t8_loop.hex", 400);
         check_reg( 1, 32'h8000_0000);   // 1 doubled 31 times
         check_reg( 2, 32'h0000_0000);   // loop counter drained
         check_reg( 4, 32'h0000_0001);   // INT_MIN <  1      (subtract overflows)

@@ -1,10 +1,12 @@
 # UART echo + VGA through the pipelined core: create project, build, program.
 # Paste into the Vivado Tcl console. Safe to re-run; it deletes and rebuilds the project dir.
 
-set srcdir  "/home/christopher/Files/Programming/DDCA/Chapter 7/pipelinedproject/UART Echo"
-set coredir "/home/christopher/Files/Programming/DDCA/Chapter 7/pipelinedproject"
-set vgadir  "$coredir/VGA Pattern Generator"
-set projdir "$srcdir/uartproj"
+set root    "/home/christopher/Files/Programming/DDCA/Chapter 7/pipelinedproject"
+set fpgadir "$root/fpga"
+set uartdir "$root/uart"
+set vgadir  "$root/vga"
+set coredir "$root/processor"
+set projdir "$fpgadir/uartproj"
 
 file delete -force $projdir
 create_project uartproj $projdir -part xc7a100tcsg324-1 -force
@@ -12,22 +14,22 @@ create_project uartproj $projdir -part xc7a100tcsg324-1 -force
 # top.sv instantiates uartecho, receiver, pipelined, and vgapatterngenerator.
 # All five must be here or the missing ones synthesize as empty black boxes.
 #
-# top.sv lives in the VGA directory, not here. The old pre-VGA copy that used
-# to sit beside this script was deleted in the integration commit; if it ever
-# comes back, both files declare "module top" and Vivado will pick one.
-add_files [list "$vgadir/top.sv" \
-                "$srcdir/uartecho.sv" \
-                "$srcdir/receiver.sv" \
+# top.sv lives beside this script in fpga/. Only one file may declare
+# "module top" anywhere in the file list or Vivado will pick one arbitrarily.
+add_files [list "$fpgadir/top.sv" \
+                "$uartdir/uartecho.sv" \
+                "$uartdir/receiver.sv" \
                 "$coredir/pipelined.sv" \
                 "$vgadir/vgagenerator.sv"]
 
 # pipelined.sv does $readmemh("memory.hex", InstrMem) with a relative path.
 # Adding the hex to the project is what lets synthesis find it. Assemble first:
-#   python3 asm.py vgatest.s memory.hex     (VGA demo)
-#   python3 asm.py echo.s    memory.hex     (UART echo)
-add_files [list "$coredir/memory.hex"]
+#   python3 asm.py vga/vgatest.s memory.hex   (VGA demo)
+#   python3 asm.py uart/echo.s   memory.hex   (UART echo)
+# Run those from the project root.
+add_files [list "$root/memory.hex"]
 
-add_files -fileset constrs_1 [list "$srcdir/top.xdc"]
+add_files -fileset constrs_1 [list "$fpgadir/top.xdc"]
 set_property top top [current_fileset]
 update_compile_order -fileset sources_1
 

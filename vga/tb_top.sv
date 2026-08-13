@@ -114,7 +114,7 @@ module tb_top;
         $display("");
 
         // Load firmware over the DUT's own $readmemh, same idiom as tb.sv.
-        $readmemh("vgatest.hex", prog);
+        $readmemh("vga/vgatest.hex", prog);
         for (int i = 0; i < 64; i++) core.InstrMem[i] = prog[i];
         for (int i = 0; i < 64; i++) core.DataMem[i]  = 32'h0000_0000;
         for (int i = 0; i < 32; i++) core.RegFile[i]  = 32'h0000_0000;
