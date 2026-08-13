@@ -57,8 +57,10 @@ logic StallF, StallD, FlushE, FlushD, lwStall, ReadsRS1, ReadsRS2;
 logic RxReady;
 
 // Branch Prediction declarations
-logic isBranchF, isBranchD, isBranchE, MisPredict;
+logic isBranchF, isBranchD, isBranchE, MisPredict, PredictedF, PredictedD, PredictedE;
 logic [31:0] PCTargetF;
+logic [1:0] BranchState [0:63];
+logic [1:0] BranchNextState;
 
 // Control Unit logic
 assign Op = InstrD[6:0];
@@ -114,14 +116,40 @@ always_comb
         default: ZeroE = 1'b0;
     endcase
 
-assign MisPredict = ZeroE ^ isBranchE;
+assign MisPredict = ZeroE ^ PredictedE;
 
 always_comb
 begin
-	if ((BranchE & MisPredict) | JumpE) PCSrcE = 2'b01;
-	else if (isBranchF) PCSrcE = 2'b10;
+	if ((BranchE && MisPredict) | JumpE) PCSrcE = 2'b01;
+	else if (isBranchF && PredictedF) PCSrcE = 2'b10;
 	else PCSrcE = 2'b00;
 end
+
+// Branch Prediction FSM
+localparam StronglyTaken = 2'b00;
+localparam WeaklyTaken = 2'b01;
+localparam WeaklyNotTaken = 2'b10;
+localparam StronglyNotTaken = 2'b11;
+
+always_ff @(posedge clk, posedge reset)
+    if (reset)
+        begin
+            for (int i = 0; i < 64; ++i)
+            begin
+                BranchState[i] <= WeaklyTaken;
+            end
+        end
+    else if (BranchE) BranchState[PCE[7:2]] <= BranchNextState;
+
+always_comb
+    begin
+        case (BranchState[PCE[7:2]])
+            StronglyTaken: BranchNextState = ZeroE ? StronglyTaken : WeaklyTaken;
+            WeaklyTaken: BranchNextState = ZeroE ? StronglyTaken : WeaklyNotTaken;
+            WeaklyNotTaken: BranchNextState = ZeroE ? WeaklyTaken : StronglyNotTaken;
+            StronglyNotTaken: BranchNextState = ZeroE ? WeaklyNotTaken : StronglyNotTaken;
+        endcase
+    end
 
 // Program Counter logic
 always_ff @(posedge clk, posedge reset)
@@ -154,6 +182,8 @@ begin
 	else isBranchF = 0;
 end
 
+assign PredictedF = ~BranchState[PCF[7:2]][1];
+
 // Fetch --> Decode Register
 always_ff @(posedge clk, posedge reset)
     if (reset | FlushD)
@@ -162,6 +192,7 @@ always_ff @(posedge clk, posedge reset)
         PCD <= 0;
         PCPlus4D <= 0;
         isBranchD <= 0;
+        PredictedD <= 0;
     end
     else if (~StallD)
     begin
@@ -169,6 +200,7 @@ always_ff @(posedge clk, posedge reset)
         PCD <= PCF;
         PCPlus4D <= PCPlus4F;
         isBranchD <= isBranchF;
+        PredictedD <= PredictedF;
     end
 
 // Register Memory logic
@@ -208,6 +240,7 @@ always_ff @(posedge clk, posedge reset)
         A1E <= 0;
         A2E <= 0;
         isBranchE <= 0;
+        PredictedE <= 0;
     end
     else
     begin
@@ -227,6 +260,7 @@ always_ff @(posedge clk, posedge reset)
         A1E <= A1D;
         A2E <= A2D;
         isBranchE <= isBranchD;
+        PredictedE <= PredictedD;
     end
 
 // HAZARD
@@ -392,7 +426,7 @@ end
 assign lwStall = ResultSrcE[0] & ((ReadsRS1 && (A1D == A3E)) | (ReadsRS2 & (A2D == A3E)));
 assign StallF = lwStall;
 assign StallD = lwStall;
-assign FlushD = PCSrcE;
-assign FlushE = lwStall | PCSrcE;
+assign FlushD = (PCSrcE == 2'b01);
+assign FlushE = lwStall | (PCSrcE == 2'b01);
 
 endmodule

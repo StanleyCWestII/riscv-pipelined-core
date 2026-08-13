@@ -28,6 +28,48 @@ module tb;
 
     logic [31:0] prog [0:63];
 
+    // ------------------------------------------------- branch predictor stats
+    // Pure benchmarking. Nothing here is part of the predictor; it exists so a
+    // change to the prediction policy can be compared against a real number.
+    //
+    // Sampled on the falling edge so BranchE (a register output) and MisPredict
+    // (combinational off ALUResultE) have both settled, with no race against
+    // the posedge that produced them.
+    //
+    // A per-cycle count of BranchE is an exact count of branches here because
+    // the execute stage is never stalled: pipelined.sv has no StallE, so E
+    // advances every clock and no branch is ever counted twice. Squashed
+    // branches never reach E at all, since FlushD and FlushE assert together.
+    // Counts are kept per branch PC, indexed PCE[7:2], the same index the 2-bit
+    // counter table will use. Every test program parks in a `beq x0,x0,done`
+    // spin loop when it finishes, which executes a branch every cycle until the
+    // run ends. Lumping that into one total drowns the real branches, so the
+    // parking PC is reported on its own line and left out of the totals.
+    int branch_test,  mispred_test;
+    int branch_total, mispred_total;
+    int br_at [0:63];
+    int mp_at [0:63];
+    logic [5:0] park_idx;           // PCE[7:2] of the spin loop, found per test
+    logic       park_found;
+
+    always @(negedge clk)
+        if (!reset && dut.BranchE) begin
+            br_at[dut.PCE[7:2]]++;
+            if (dut.MisPredict) mp_at[dut.PCE[7:2]]++;
+        end
+
+    // Cycles from reset release until the parking branch first reaches E, i.e.
+    // how long the program's real work actually took. Everything after that is
+    // the spin loop and carries no information.
+    int   cycles_to_park;
+    logic parked;
+
+    always @(negedge clk)
+        if (!reset && !parked) begin
+            cycles_to_park++;
+            if (park_found && dut.PCE[7:2] == park_idx) parked = 1'b1;
+        end
+
     // -------------------------------------------------------------- loading
     // Zero the architectural state the DUT never resets (RegFile and DataMem
     // have no reset in pipelined.sv, so without this they start as X and every
@@ -38,14 +80,35 @@ module tb;
         for (int i = 0; i < 64; i++) dut.InstrMem[i] = prog[i];
         for (int i = 0; i < 64; i++) dut.DataMem[i]  = 32'h0000_0000;
         for (int i = 0; i < 32; i++) dut.RegFile[i]  = 32'h0000_0000;
+
+        // Locate the parking spin loop: a B-type whose branch immediate is 0,
+        // i.e. a branch to itself. Every test ends with one.
+        //
+        // Take the FIRST such word, not the last: asm.py pads all unused
+        // instruction memory with this same encoding, so on a short program
+        // most of the array matches. The program parks at the first one it
+        // reaches and never advances past it, so that is the executed one.
+        park_found = 1'b0;
+        for (int i = 0; i < 64; i++)
+            if (!park_found && prog[i][6:0] == 7'b1100011 &&
+                {prog[i][31], prog[i][7], prog[i][30:25], prog[i][11:8], 1'b0} == 13'b0)
+            begin
+                park_idx   = i[5:0];
+                park_found = 1'b1;
+            end
     endtask
 
     task automatic run_program(input string name,
                                input string hexfile,
                                input int    cycles);
-        current    = name;
-        pass_test  = 0;
-        fail_test  = 0;
+        current      = name;
+        pass_test    = 0;
+        fail_test    = 0;
+        branch_test  = 0;
+        mispred_test = 0;
+        for (int i = 0; i < 64; i++) begin br_at[i] = 0; mp_at[i] = 0; end
+        cycles_to_park = 0;
+        parked         = 1'b0;
 
         reset = 1'b0;
         #1 reset = 1'b1;            // rising edge drives the async reset
@@ -87,8 +150,32 @@ module tb;
     endtask
 
     task automatic report();
-        $display("  %-16s %2d/%2d %s", current, pass_test,
-                 pass_test + fail_test, (fail_test == 0) ? "PASS" : "**FAIL**");
+        string verdict;
+        verdict = (fail_test == 0) ? "PASS" : "**FAIL**";
+
+        // Totals for this test, parking loop excluded.
+        branch_test  = 0;
+        mispred_test = 0;
+        for (int i = 0; i < 64; i++)
+            if (!(park_found && i[5:0] == park_idx)) begin
+                branch_test  += br_at[i];
+                mispred_test += mp_at[i];
+            end
+        branch_total  += branch_test;
+        mispred_total += mispred_test;
+
+        if (branch_test == 0)
+            $display("  %-16s %2d/%2d %s", current, pass_test,
+                     pass_test + fail_test, verdict);
+        else begin
+            $display("  %-16s %2d/%2d %-9s branches %3d   mispredicts %3d   cycles %3d",
+                     current, pass_test, pass_test + fail_test, verdict,
+                     branch_test, mispred_test, cycles_to_park);
+            for (int i = 0; i < 64; i++)
+                if (br_at[i] > 0 && !(park_found && i[5:0] == park_idx))
+                    $display("                     pc 0x%02h   %3d exec  %3d mispred",
+                             i * 4, br_at[i], mp_at[i]);
+        end
     endtask
 
     // ----------------------------------------------------------------- body
@@ -202,6 +289,11 @@ module tb;
                  pass_total, pass_total + fail_total);
         if (fail_total == 0) $display("=== ALL TESTS PASSED ===");
         else                 $display("=== %0d FAILURES ===", fail_total);
+        $display("");
+        $display("=== branch predictor: 2-bit saturating counters, 64 entries ===");
+        $display("=== %0d branches, %0d mispredicts, %0d wasted cycles ===",
+                 branch_total, mispred_total, 2 * mispred_total);
+        $display("=== (parking spin loops excluded from all counts) ===");
         $display("");
         $finish;
     end
