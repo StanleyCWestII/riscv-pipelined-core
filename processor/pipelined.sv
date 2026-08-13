@@ -68,7 +68,7 @@ logic Valid [0:15]; // 16 registers each holding a bit
 logic [1:0] Tag [0:15]; // 16 registers each holding 2 bits
 logic [31:0] DCache [0:15][0:3]; // 16 blocks, 4 words
 logic CacheState, CacheNextState, Hit, Miss, MemoryAccess,
-MemReady;
+MemReady = 1'b1, MemStall;
 
 // Control Unit logic
 assign Op = InstrD[6:0];
@@ -167,6 +167,7 @@ localparam Fetch = 1'b1;
 always_ff @(posedge clk, posedge reset)
     if (reset)
         begin
+            CacheState <= Idle;
             for (int i = 0; i < 16; ++i)
             begin
                 Valid[i] <= 0;
@@ -178,9 +179,12 @@ always_ff @(posedge clk, posedge reset)
 
         if (CacheState == Fetch && MemReady)
         begin
-            Vali[ALUResultM[7:4]] <= 1'b1;
-            Tag[7:4] <= ALUResultM[9:8];
-            DCache <=
+            Valid[ALUResultM[7:4]] <= 1'b1;
+            Tag[ALUResultM[7:4]] <= ALUResultM[9:8];
+            DCache[ALUResultM[7:4]][0] <= DataMem[{ALUResultM[9:4], 2'b00}];
+            DCache[ALUResultM[7:4]][1] <= DataMem[{ALUResultM[9:4], 2'b01}];
+            DCache[ALUResultM[7:4]][2] <= DataMem[{ALUResultM[9:4], 2'b10}];
+            DCache[ALUResultM[7:4]][3] <= DataMem[{ALUResultM[9:4], 2'b11}];
         end
     end
 
@@ -189,14 +193,13 @@ always_comb
         Idle:
         begin
             MemStall = 0;
-            if (Hit) BranchNextState = Idle;
-            else if (Miss) BranchNextState = Fetch;
+            CacheNextState = Miss ? Fetch : Idle;
         end
         Fetch:
         begin
             MemStall = 1;
-            if (MemReady) BranchNextState = Idle;
-            else BranchNextState = Fetch;
+            if (MemReady) CacheNextState = Idle;
+            else CacheNextState = Fetch;
         end
     endcase
 
@@ -488,7 +491,6 @@ assign StallD = lwStall || MemStall;
 assign StallE = MemStall;
 assign StallM = MemStall;
 assign FlushD = (PCSrcE == 2'b01) && ~MemStall;
-assign FlushE = lwStall | (PCSrcE == 2'b01) && ~MemStall;
+assign FlushE = (lwStall || (PCSrcE == 2'b01)) && ~MemStall;
 assign FlushW = StallM;
-
 endmodule
