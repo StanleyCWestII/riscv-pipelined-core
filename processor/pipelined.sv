@@ -28,7 +28,7 @@ logic [31:0] InstrMem [0:63];
 logic [31:0] RegFile [31:0];
 
 // Data Memory declarations
-logic [31:0] DataMem [0:63];
+logic [31:0] DataMem [0:255];
 
 // Pipelined Register declarations
 // Fetch
@@ -51,7 +51,8 @@ logic [4:0] A3W;
 logic [31:0] RD2EI;
 logic [4:0] A1E, A2E;
 logic [1:0] ForwardAE, ForwardBE;
-logic StallF, StallD, FlushE, FlushD, lwStall, ReadsRS1, ReadsRS2;
+logic StallF, StallD, FlushE, FlushD, lwStall, ReadsRS1, ReadsRS2,
+StallE, StallM, FlushW;
 
 // UART Echo declarations
 logic RxReady;
@@ -61,6 +62,13 @@ logic isBranchF, isBranchD, isBranchE, MisPredict, PredictedF, PredictedD, Predi
 logic [31:0] PCTargetF;
 logic [1:0] BranchState [0:63];
 logic [1:0] BranchNextState;
+
+// Memory Hierarchy declarations
+logic Valid [0:15]; // 16 registers each holding a bit
+logic [1:0] Tag [0:15]; // 16 registers each holding 2 bits
+logic [31:0] DCache [0:15][0:3]; // 16 blocks, 4 words
+logic CacheState, CacheNextState, Hit, Miss, MemoryAccess,
+MemReady;
 
 // Control Unit logic
 assign Op = InstrD[6:0];
@@ -150,6 +158,47 @@ always_comb
             StronglyNotTaken: BranchNextState = ZeroE ? WeaklyNotTaken : StronglyNotTaken;
         endcase
     end
+
+
+// Memory Hierarchy FSM
+localparam Idle = 1'b0;
+localparam Fetch = 1'b1;
+
+always_ff @(posedge clk, posedge reset)
+    if (reset)
+        begin
+            for (int i = 0; i < 16; ++i)
+            begin
+                Valid[i] <= 0;
+            end
+        end
+    else
+    begin
+        CacheState <= CacheNextState;
+
+        if (CacheState == Fetch && MemReady)
+        begin
+            Vali[ALUResultM[7:4]] <= 1'b1;
+            Tag[7:4] <= ALUResultM[9:8];
+            DCache <=
+        end
+    end
+
+always_comb
+    case (CacheState)
+        Idle:
+        begin
+            MemStall = 0;
+            if (Hit) BranchNextState = Idle;
+            else if (Miss) BranchNextState = Fetch;
+        end
+        Fetch:
+        begin
+            MemStall = 1;
+            if (MemReady) BranchNextState = Idle;
+            else BranchNextState = Fetch;
+        end
+    endcase
 
 // Program Counter logic
 always_ff @(posedge clk, posedge reset)
@@ -242,7 +291,7 @@ always_ff @(posedge clk, posedge reset)
         isBranchE <= 0;
         PredictedE <= 0;
     end
-    else
+    else if (~StallE)
     begin
         RD1E <= RD1D;
         RD2E <= RD2D;
@@ -327,7 +376,7 @@ always_ff @(posedge clk, posedge reset)
         ResultSrcM <= 0;
         MemWriteM <= 0;
     end
-    else
+    else if (~StallM)
     begin
         ALUResultM <= ALUResultE;
         WDM <= RD2EI;
@@ -351,8 +400,18 @@ always_comb
             default: RDM = 0;
             endcase
         end
-        1'b0: RDM = DataMem[ALUResultM[7:2]];
+        1'b0:
+        begin
+            if (Hit) RDM = DCache[ALUResultM[7:4]][ALUResultM[3:2]];
+        end
     endcase
+
+// To not stall useless instructions, we have to make sure
+// that a request was sent. These two signals only fire on
+// lw and sw.
+assign MemoryAccess = MemWriteM || (ResultSrcM == 2'b01);
+assign Hit = Valid[ALUResultM[7:4]] && (Tag[ALUResultM[7:4]] == ALUResultM[9:8]);
+assign Miss = MemoryAccess && ~Hit && ~ALUResultM[10];
 
 // VGA logic
 always_ff @(posedge clk, posedge reset)
@@ -367,7 +426,7 @@ always_ff @(posedge clk, posedge reset)
     else if (ALUResultM[10] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
 
 always_ff @(posedge clk)
-    if (MemWriteM && ~ALUResultM[10]) DataMem[ALUResultM[7:2]] <= WDM;
+    if (MemWriteM && ~ALUResultM[10]) DataMem[ALUResultM[9:2]] <= WDM;
 
 // UART Echo logic
 assign TxSend = MemWriteM && ALUResultM[10] && (ALUResultM[3:2] == 2'b00);
@@ -375,7 +434,7 @@ assign TxByte = WDM[7:0];
 
 // Memory --> Writeback Register
 always_ff @(posedge clk, posedge reset)
-    if (reset)
+    if (reset || FlushW)
     begin
         RDW <= 0;
         ALUResultW <= 0;
@@ -424,9 +483,12 @@ begin
 end
 
 assign lwStall = ResultSrcE[0] & ((ReadsRS1 && (A1D == A3E)) | (ReadsRS2 & (A2D == A3E)));
-assign StallF = lwStall;
-assign StallD = lwStall;
-assign FlushD = (PCSrcE == 2'b01);
-assign FlushE = lwStall | (PCSrcE == 2'b01);
+assign StallF = lwStall || MemStall;
+assign StallD = lwStall || MemStall;
+assign StallE = MemStall;
+assign StallM = MemStall;
+assign FlushD = (PCSrcE == 2'b01) && ~MemStall;
+assign FlushE = lwStall | (PCSrcE == 2'b01) && ~MemStall;
+assign FlushW = StallM;
 
 endmodule
