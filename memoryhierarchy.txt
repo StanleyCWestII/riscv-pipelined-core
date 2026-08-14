@@ -1,0 +1,70 @@
+What I'm building:
+
+A direct-mapped, 16 lines, 4 words per line, write-through
+with no write allocate, over a 256-word DataMem behind a 15-cycle handshake.
+
+Right now my DataMem is 64 words and answers in one cycle. This is only true because it's small. Scale it higher and one cycle becomes impossible. Memory cannot be both big and fast.
+
+Memory hierarchies operate on two fundamentals:
+    Temporal locality, which means if you touch address X you'll probably want to touch it again. This breaks down into a loop counter, an accumulator, and a stack frame.
+    Spatial locality, which means if you touch X, you'll probably touch X+4 soon. This involves walking an array, reading struct fields, and fetching sequential instructions.
+
+My processor has two different kinds of memory request:
+    Instruction fetch, every single cycle, in Stage F: InstrF = InstrMem[PCF[7:2]] at line 176.
+
+    Data access, only on lw and sw, in Stage M: RDM = DataMem[ALUResultM[7:2]] at line 354.
+
+There are two different kinds of caches: I- and D-cache. An I-cache caches the instruction fetch. A D-cache caches the data access.
+
+For this project, I am building only D-cache for a few reasons:
+    My programs are 64 instructions. I-cache is not measurable at this scale.
+
+    My branch predictor relies on a combinational fetch. I-caching would cause me to rework this.
+
+    Data is where the interesting patterns live.
+
+There are a few different cache types. I am using direct-mapped for now because it is cheap and lets me experiment.
+
+A direct-mapped cache has exactly one legal slot, computed from the address. Slot = block_number mod 16. To check for a hit, you compute the slot, read the one tag stored there, and do one comparison.
+
+My cache is 16 lines, 4 words per line. Because it is only 16 lines, several blocks in my memory own the same line. To distinguish which word by what block, we use a tag. The full address is mapped as:
+
+[1:0] - which byte inside the word (always 00, i only do lw/sw)
+[3:2] - which word inside the block (4 words needs 2 bits)
+[7:4] - which line (16 lines needs 4 bits)
+[9:8] - tag (distinguishes the 4 blocks that collide)
+[10] - MMIO select (existing decode, not relevant)
+
+Now some terminology:
+
+A block (or line) is the unit of transfer. On a miss, we don't fetch one word, we fetch the entire block. Because of temporal locality, this boosts our hit rate.
+
+On a store that hits, do you also update main memory?
+    Write-through: yes, immediately. Cache and memory always agree.
+    Write-back: no. Update only the cache and set a dirty bit on that line. Memory is stale, and gets updated only when the line is eventually evicted.
+
+On a store that misses, do you pull the block into the cache first?
+    Write-allocate: yes, fetch the block, then write into it.
+    No write-allocate: no, send the store straight to memory and leave the cache alone.
+
+THE ACTUAL BUILD:
+
+Current M stage:
+ALUResultM --> DataMem[7:2] --> RDM
+
+After M stage:
+            --> bit 10 set --> MMIO decode --> RDM
+ALUResultM |
+            --> bit 10 clear --> D-cache --> hit --> RDM
+                                |
+                                --> refill FSM --> slow mem
+                                    |
+                                    --> MemStall = 1
+
+Gameplan:
+
+Declare the D-cache as 16 lines of 4 words. This is 256 bytes of cache.
+
+Check if bit 10 is set or clear. This is already done on line 354. If bit 10 is clear, we proceed to D-cache. What does this actually entail?
+
+We first index into the cache line with ALUResultM[7:2].

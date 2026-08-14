@@ -68,7 +68,8 @@ logic Valid [0:15]; // 16 registers each holding a bit
 logic [1:0] Tag [0:15]; // 16 registers each holding 2 bits
 logic [31:0] DCache [0:15][0:3]; // 16 blocks, 4 words
 logic CacheState, CacheNextState, Hit, Miss, MemoryAccess,
-MemReady = 1'b1, MemStall;
+MemReady, MemStall;
+logic [4:0] MemCount;
 
 // Control Unit logic
 assign Op = InstrD[6:0];
@@ -163,6 +164,8 @@ always_comb
 // Memory Hierarchy FSM
 localparam Idle = 1'b0;
 localparam Fetch = 1'b1;
+
+assign MemReady = (MemCount == 0);
 
 always_ff @(posedge clk, posedge reset)
     if (reset)
@@ -416,6 +419,12 @@ assign MemoryAccess = MemWriteM || (ResultSrcM == 2'b01);
 assign Hit = Valid[ALUResultM[7:4]] && (Tag[ALUResultM[7:4]] == ALUResultM[9:8]);
 assign Miss = MemoryAccess && ~Hit && ~ALUResultM[10];
 
+// Slow Memory logic
+always_ff @(posedge clk, posedge reset)
+    if (reset) MemCount <= 0;
+    else if (CacheState == Idle && Miss) MemCount <= 15;
+    else if (CacheState == Fetch) MemCount <= MemCount - 1;
+
 // VGA logic
 always_ff @(posedge clk, posedge reset)
 begin
@@ -498,4 +507,5 @@ assign StallM = MemStall;
 assign FlushD = (PCSrcE == 2'b01) && ~MemStall;
 assign FlushE = (lwStall || (PCSrcE == 2'b01)) && ~MemStall;
 assign StallW = MemStall;
+
 endmodule
