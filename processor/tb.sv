@@ -36,9 +36,11 @@ module tb;
     // (combinational off ALUResultE) have both settled, with no race against
     // the posedge that produced them.
     //
-    // A per-cycle count of BranchE is an exact count of branches here because
-    // the execute stage is never stalled: pipelined.sv has no StallE, so E
-    // advances every clock and no branch is ever counted twice. Squashed
+    // A per-cycle count of BranchE would double-count once the cache exists:
+    // a memory stall freezes E, so a branch sitting there is re-counted every
+    // frozen cycle. Gating on !MemStall counts each branch exactly once, on
+    // the cycle it actually advances. (Before the cache, E never stalled and
+    // the gate was unnecessary; it is load-bearing now.) Squashed
     // branches never reach E at all, since FlushD and FlushE assert together.
     // Counts are kept per branch PC, indexed PCE[7:2], the same index the 2-bit
     // counter table will use. Every test program parks in a `beq x0,x0,done`
@@ -53,7 +55,7 @@ module tb;
     logic       park_found;
 
     always @(negedge clk)
-        if (!reset && dut.BranchE) begin
+        if (!reset && dut.BranchE && !dut.MemStall) begin
             br_at[dut.PCE[7:2]]++;
             if (dut.MisPredict) mp_at[dut.PCE[7:2]]++;
         end
