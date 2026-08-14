@@ -67,4 +67,15 @@ Declare the D-cache as 16 lines of 4 words. This is 256 bytes of cache.
 
 Check if bit 10 is set or clear. This is already done on line 354. If bit 10 is clear, we proceed to D-cache. What does this actually entail?
 
-We first index into the cache line with ALUResultM[7:2].
+We first index into the cache line with ALUResultM[7:4].
+
+block - 4 words, the unit of transfer
+line - a slot holding one block plus its tag and valid bit
+set - the group of lines an address is allowed to go in
+way - which line inside that group
+
+DCache[set][way][word]
+
+line = ALUResultM[7:4]
+set = ALUResumtM[6:4]
+way = 0 or 1, you pick

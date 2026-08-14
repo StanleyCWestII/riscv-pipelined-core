@@ -55,7 +55,9 @@ module tb_cache;
     always @(posedge clk)
         acc_done_d <= nocache_mode && dut.MemoryAccess && !dut.MemStall;
     always @(negedge clk)
-        if (acc_done_d) for (int i = 0; i < 16; i++) dut.Valid[i] = 1'b0;
+        if (acc_done_d)
+            for (int i = 0; i < 8; i++)
+                for (int j = 0; j < 2; j++) dut.Valid[i][j] = 1'b0;
 
     always @(negedge clk) if (!reset && !parked) begin
         cycles++;
@@ -85,7 +87,8 @@ module tb_cache;
         for (int i = 0; i < 64;  i++) dut.InstrMem[i] = prog[i];
         for (int i = 0; i < 32;  i++) dut.RegFile[i]  = 32'h0;
         for (int i = 0; i < 256; i++) dut.DataMem[i]  = i;   // seeded, not zeroed
-        for (int i = 0; i < 16;  i++) dut.Valid[i]    = 1'b0;
+        for (int i = 0; i < 8; i++)
+            for (int j = 0; j < 2; j++) dut.Valid[i][j] = 1'b0;
 
         park_found = 1'b0;
         for (int i = 0; i < 64; i++)
@@ -113,7 +116,7 @@ module tb_cache;
 
     initial begin
         $display("");
-        $display("=== D-cache: 16 lines x 4 words (64 words), direct-mapped,");
+        $display("=== D-cache: 8 sets x 2 ways x 4 words (64 words), 2-way set assoc,");
         $display("===          write-through, 15-cycle main memory ===");
         $display("");
         $display("  %-18s %6s %7s %7s %9s %8s %9s %8s",

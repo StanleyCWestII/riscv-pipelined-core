@@ -64,11 +64,12 @@ logic [1:0] BranchState [0:63];
 logic [1:0] BranchNextState;
 
 // Memory Hierarchy declarations
-logic Valid [0:15]; // 16 registers each holding a bit
-logic [1:0] Tag [0:15]; // 16 registers each holding 2 bits
-logic [31:0] DCache [0:15][0:3]; // 16 blocks, 4 words
+logic Valid [0:7][0:1]; // 8 sets, 2 ways
+logic [2:0] Tag [0:7][0:1]; // 8 sets, 2 ways
+logic [31:0] DCache [0:7][0:1][0:3]; // 8 sets, 2 ways, 4 words
+logic LRU [0:7]; // 8 sets, least recently used
 logic CacheState, CacheNextState, Hit, Miss, MemoryAccess,
-MemReady, MemStall;
+MemReady, MemStall, Hit0, Hit1, Victim;
 logic [4:0] MemCount;
 
 // Control Unit logic
@@ -166,28 +167,38 @@ localparam Idle = 1'b0;
 localparam Fetch = 1'b1;
 
 assign MemReady = (MemCount == 0);
+assign Victim = ~LRU[ALUResultM[6:4]];
 
 always_ff @(posedge clk, posedge reset)
     if (reset)
         begin
             CacheState <= Idle;
-            for (int i = 0; i < 16; ++i)
-            begin
-                Valid[i] <= 0;
-            end
+            for (int i = 0; i < 8; ++i)
+                begin
+                    LRU[i] <= 0;
+                    for (int j = 0; j < 2; ++j)
+                    begin
+                        Valid[i][j] <= 0;
+                    end
+                end
         end
     else
     begin
         CacheState <= CacheNextState;
 
+        if (MemoryAccess && Hit0) LRU[ALUResultM[6:4]] <= 0;
+        if (MemoryAccess && Hit1) LRU[ALUResultM[6:4]] <= 1;
+
         if (CacheState == Fetch && MemReady)
         begin
-            Valid[ALUResultM[7:4]] <= 1'b1;
-            Tag[ALUResultM[7:4]] <= ALUResultM[9:8];
-            DCache[ALUResultM[7:4]][0] <= DataMem[{ALUResultM[9:4], 2'b00}];
-            DCache[ALUResultM[7:4]][1] <= DataMem[{ALUResultM[9:4], 2'b01}];
-            DCache[ALUResultM[7:4]][2] <= DataMem[{ALUResultM[9:4], 2'b10}];
-            DCache[ALUResultM[7:4]][3] <= DataMem[{ALUResultM[9:4], 2'b11}];
+            Valid[ALUResultM[6:4]][Victim] <= 1'b1;
+            Tag[ALUResultM[6:4]][Victim] <= ALUResultM[9:7];
+            LRU[ALUResultM[6:4]] <= Victim;
+
+            DCache[ALUResultM[6:4]][Victim][0] <= DataMem[{ALUResultM[9:4], 2'b00}];
+            DCache[ALUResultM[6:4]][Victim][1] <= DataMem[{ALUResultM[9:4], 2'b01}];
+            DCache[ALUResultM[6:4]][Victim][2] <= DataMem[{ALUResultM[9:4], 2'b10}];
+            DCache[ALUResultM[6:4]][Victim][3] <= DataMem[{ALUResultM[9:4], 2'b11}];
         end
     end
 
@@ -408,7 +419,8 @@ always_comb
         end
         1'b0:
         begin
-            if (Hit) RDM = DCache[ALUResultM[7:4]][ALUResultM[3:2]];
+            RDM = Hit0 ? DCache[ALUResultM[6:4]][0][ALUResultM[3:2]]
+            : DCache[ALUResultM[6:4]][1][ALUResultM[3:2]];
         end
     endcase
 
@@ -416,8 +428,10 @@ always_comb
 // that a request was sent. These two signals only fire on
 // lw and sw.
 assign MemoryAccess = MemWriteM || (ResultSrcM == 2'b01);
-assign Hit = Valid[ALUResultM[7:4]] && (Tag[ALUResultM[7:4]] == ALUResultM[9:8]);
-assign Miss = MemoryAccess && ~Hit && ~ALUResultM[10];
+assign Hit0 = Valid[ALUResultM[6:4]][0] && (Tag[ALUResultM[6:4]][0] == ALUResultM[9:7]);
+assign Hit1 = Valid[ALUResultM[6:4]][1] && (Tag[ALUResultM[6:4]][1] == ALUResultM[9:7]);
+assign Hit = Hit0 || Hit1;
+assign Miss = MemoryAccess && ~Hit && ~ALUResultM[10] && (ResultSrcM == 2'b01);
 
 // Slow Memory logic
 always_ff @(posedge clk, posedge reset)
@@ -442,7 +456,7 @@ always_ff @(posedge clk)
         if (MemWriteM && ~ALUResultM[10])
         DataMem[ALUResultM[9:2]] <= WDM;
         if (MemWriteM && ~ALUResultM[10] && Hit)
-        DCache[ALUResultM[7:4]][ALUResultM[3:2]] <= WDM;
+        DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]] <= WDM;
     end
 
 // UART Echo logic
