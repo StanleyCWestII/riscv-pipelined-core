@@ -1,4 +1,4 @@
-module uartecho(input logic clk, Send, input logic [9:0] Input, output logic tx, Busy = 0);
+module transmitter(input logic clk, Send, input logic [9:0] Input, output logic tx, Busy = 0);
 
 logic [3:0] Index = 0;
 logic [9:0] Count = 0, InputNext;
