@@ -2,7 +2,7 @@ module receiver(input logic rx, clk, output logic [7:0] Data, output logic Valid
 
 logic Busy = 0, Sync1 = 1, Sync2 = 1;
 logic [3:0] Index = 0;
-logic [9:0] Count = 0, Storage;
+logic [10:0] Count = 0, Storage;
 
 always_ff @(posedge clk)
     begin
@@ -26,7 +26,11 @@ always_ff @(posedge clk)
         if (~Sync2 && ~Busy) Busy <= 1;
         if (Busy)
         begin
-            if (Count == 867)
+            if (Index == 0)
+            begin
+                if (Count == 1301) Index <= Index + 1;
+            end
+            else if (Count == 867)
             begin
                 if (Index == 9)
                 begin
