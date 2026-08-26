@@ -11,13 +11,13 @@ set projdir "$fpgadir/uartproj"
 file delete -force $projdir
 create_project uartproj $projdir -part xc7a100tcsg324-1 -force
 
-# top.sv instantiates uartecho, receiver, pipelined, and vgapatterngenerator.
+# top.sv instantiates transmitter, receiver, pipelined, and vgapatterngenerator.
 # All five must be here or the missing ones synthesize as empty black boxes.
 #
 # top.sv lives beside this script in fpga/. Only one file may declare
 # "module top" anywhere in the file list or Vivado will pick one arbitrarily.
 add_files [list "$fpgadir/top.sv" \
-                "$uartdir/uartecho.sv" \
+                "$uartdir/transmitter.sv" \
                 "$uartdir/receiver.sv" \
                 "$coredir/pipelined.sv" \
                 "$vgadir/vgagenerator.sv"]
