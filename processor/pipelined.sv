@@ -270,6 +270,11 @@ always_ff @(posedge clk, posedge reset)
             DCache[ALUResultM[6:4]][Victim][2] <= DataMem[{ALUResultM[9:4], 2'b10}];
             DCache[ALUResultM[6:4]][Victim][3] <= DataMem[{ALUResultM[9:4], 2'b11}];
         end
+
+        // if it's a write to memory, not a peripheral, and there was a hit, WDM
+        // gets written into the DCache
+        if (MemWriteM && ~ALUResultM[10] && Hit)
+        DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]] <= WDM;
     end
 
 always_comb
@@ -555,10 +560,6 @@ always_ff @(posedge clk)
         // 7 bits gets WDM
         if (MemWriteM && ~ALUResultM[10])
         DataMem[ALUResultM[9:2]] <= WDM;
-        // if it's a write to memory, not a peripheral, and there was a hit, WDM
-        // gets written into the DCache
-        if (MemWriteM && ~ALUResultM[10] && Hit)
-        DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]] <= WDM;
     end
 
 // UART Echo logic

@@ -13,3 +13,6 @@ uartproj.ip_user_files/
 *.log
 *.str
 .Xil/
+
+# Vivado project directory, deleted and rebuilt by fpga/build.tcl on every run
+fpga/uartproj/
