@@ -9,13 +9,14 @@
 #   make top    build and run the core-drives-VGA integration bench
 #   make all3   all three, in order
 #   make asm    re-assemble only (after editing processor/tests/*.s)
+#   make wave   build with -DVCD, run, write wave.vcd for gtkwave
 #   make clean
 
 SRCS  := processor/tb.sv processor/pipelined.sv
 ASM   := $(wildcard processor/tests/*.s)
 HEX   := $(ASM:.s=.hex)
 
-.PHONY: all asm clean vga top all3 cache
+.PHONY: all asm clean vga top all3 cache wave
 all: sim
 	./sim
 
@@ -56,5 +57,10 @@ vga/vgatest.hex: vga/vgatest.s asm.py
 
 all3: all vga top
 
+wave: $(SRCS) $(HEX)
+	iverilog -g2012 -DVCD -o sim_wave $(SRCS)
+	./sim_wave
+	@echo "wrote wave.vcd -- view with: gtkwave wave.vcd"
+
 clean:
-	rm -f sim sim_vga sim_top sim_cache $(HEX) $(BENCH_HEX) vga/vgatest.hex
+	rm -f sim sim_vga sim_top sim_cache sim_wave wave.vcd $(HEX) $(BENCH_HEX) vga/vgatest.hex

@@ -21,6 +21,17 @@ module tb;
     initial clk = 1'b0;
     always #5 clk = ~clk;
 
+    // ----------------------------------------------------------------- vcd
+    // Waveform dump, off by default. Build with -DVCD to enable:
+    //   iverilog -g2012 -DVCD -o sim processor/tb.sv processor/pipelined.sv
+    // Then: vvp sim && gtkwave wave.vcd
+    `ifdef VCD
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(0, tb);
+    end
+    `endif
+
     // ------------------------------------------------------------ bookkeeping
     int    pass_total, fail_total;
     int    pass_test,  fail_test;

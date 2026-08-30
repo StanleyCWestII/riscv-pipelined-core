@@ -48,10 +48,11 @@ report_utilization
 report_timing_summary -delay_type max -max_paths 3
 ```
 
-where pre_synth.tcl is one line:
+where pre_synth.tcl is two lines:
 
 ```
-file copy -force " root /memory.hex" [file join [pwd] memory.hex]
+set root [file dirname [file dirname [file normalize [info script]]]]
+file copy -force [file join $root memory.hex] [file join [pwd] memory.hex]
 ```
 
 Check utilization before programming. Without the hook the ROM reads as empty, constant propagation removes the core outward from the fetch stage, and the result is a bitstream that programs normally and asserts DONE with roughly 30 LUTs in it. A small utilization number means the design was deleted.
@@ -195,16 +196,17 @@ The receiver was sampling the transition itself. When the sample won the race it
 
 ##### Why Bits 1 Through 7 Survived
 
-By accident, when `Index` advanced at 867, the counter did not reset that cycle, so it climbed to 1023, wrapped, and counted top 867 again. That made bit 1's period 1024 cycles insteadd of 868, which pushed every later sample about 156 cycles past its bit edge. The frame decoded because of this rollover.
+By accident, when `Index` advanced at 867, the counter did not reset that cycle, so it climbed to 1023, wrapped, and counted top 867 again. That made bit 1's period 1024 cycles instead of 868, which pushed every later sample about 156 cycles past its bit edge. The frame decoded because of this rollover.
 
 | Bit | Sample Point, Cycles From `Busy` | Ideal Center | Position In Bit |
+|---|---|---|---|
 | 0 | 868 | 1302 | Exactly On The Leading Edge |
 | 1 | 1892 | 2170 | 18% In |
 | 2+ | +868 Each | +868 Each | 18% In |
 
 ##### Fix
 
-I made two adjustments. Firstly, I widened `Count` to `logic Count [10:0]`, and then I made `Index` advance on `Count == 1301` when `Index == 0`, else on `Count == 867`. 
+I made two adjustments. Firstly, I widened `Count` to `logic [10:0] Count`, and then I made `Index` advance on `Count == 1301` when `Index == 0`, else on `Count == 867`. 
 
 After these corrections, samples now land at 1301, 2169, and 3037 cycles from `Busy`. This is consistent against the ideal centers.
 
@@ -243,7 +245,7 @@ The D-cache is built from 8 sets, 2 ways, 4 words per line, 64 words total, writ
 | B3 Reuse Thrash | 75.0% | 5.25 | 12324 | 5796 | 2.13x |
 | B4 Conflict | 96.9% | 1.53 | 1258 | 204 | 6.17x |
 
-Both cycles w/o and cycles w/ column are reproduce from ``make cache``.
+Both cycles w/o and cycles w/ column are reproduced from ``make cache``.
 
 B1 and B3 land on identical hit rates, despite B3 having four times the reuse. That gap against B2 is the capacity miss, made visible. 
 
@@ -339,13 +341,13 @@ This is a design decision, though it inhibits my processor at running greater th
                             addr bit 10
                           0 /          \ 1
                            /            \
-          +---------------------+     +----------------------------+
-          | D-cache             |     | MMIO                       |
-          | 8 sets x 2 ways     |     | 0x400  st  UART TX byte    |
-          | 4 words / line      |     | 0x404  ld  TxBusy, RxReady |
-          | 64 words total      |     | 0x408  ld  UART RX, clears |
-          | write-through       |     | 0x40C  st  VGA bg colour   |
-          | no write-allocate   |     +----------------------------+
+          +---------------------+     +-------------------------------+
+          | D-cache             |     | MMIO                          |
+          | 8 sets x 2 ways     |     | 0x400  st     UART TX byte    |
+          | 4 words / line      |     | 0x404  ld     TxBusy, RxReady |
+          | 64 words total      |     | 0x408  ld     UART RX, clears |
+          | write-through       |     | 0x40C  ld/st  VGA bg colour   |
+          | no write-allocate   |     +-------------------------------+
           | LRU replacement     |
           +---------------------+
                      | Miss
@@ -438,4 +440,4 @@ Every design module in this repository is mine. The testbenches, scripts, constr
 | Both hardware defect fixes in 4e | `fpga/pre_synth.tcl` |
 
 The most important reference to this project was Harris & Harris's Digital Design and Computer Architecture: RISC-V Edition, which taught me the ins and outs of how these systems work. I would like to extend a thank you to them personally:
-- Harris and Harris, Digital Design and Computer Architecture: RISC-V Edition.
+- Harris and Harris, *Digital Design and Computer Architecture: RISC-V Edition*.
