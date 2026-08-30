@@ -1,7 +1,19 @@
 # UART echo + VGA through the pipelined core: create project, build, program.
-# Paste into the Vivado Tcl console. Safe to re-run; it deletes and rebuilds the project dir.
+# Safe to re-run; it deletes and rebuilds the project dir.
+#
+# Run it from the Vivado Tcl console with:
+#     source /path/to/repo/fpga/build.tcl
+#
+# Do NOT paste the file in. Every path below is derived from this script's own
+# location, and [info script] is empty when a script is pasted rather than
+# sourced.
 
-set root    "/home/scw/Files/Programming/DDCA/Chapter 7/riscv-pipelined-core"
+if {[info script] eq ""} {
+    error "run this with 'source <repo>/fpga/build.tcl' -- pasting it into the console leaves \[info script\] empty, so the repo root cannot be found"
+}
+
+# fpga/build.tcl -> fpga -> repo root
+set root    [file dirname [file dirname [file normalize [info script]]]]
 set fpgadir "$root/fpga"
 set uartdir "$root/uart"
 set vgadir  "$root/vga"
@@ -41,7 +53,7 @@ update_compile_order -fileset sources_1
 #     CRITICAL WARNING: [Synth 8-4445] could not open $readmem data file
 #     WARNING: [Synth 8-3848] Net InstrMem ... does not have driver
 # and constant propagation then deletes the entire core. The build still
-# succeeds and still programs the board. It is just empty. See FPGA_BRINGUP.md.
+# succeeds and still programs the board. It is just empty. See README section 2b.
 # ---------------------------------------------------------------------------
 set hookfile "$projdir/pre_synth.tcl"
 set fh [open $hookfile w]
