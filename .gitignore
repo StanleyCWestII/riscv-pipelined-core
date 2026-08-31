@@ -16,3 +16,8 @@ uartproj.ip_user_files/
 
 # Vivado project directory, deleted and rebuilt by fpga/build.tcl on every run
 fpga/uartproj/
+
+# assembler output: regenerated from the .s sources by `make`, `make cache`, `make top`
+processor/tests/*.hex
+processor/bench/*.hex
+vga/vgatest.hex
