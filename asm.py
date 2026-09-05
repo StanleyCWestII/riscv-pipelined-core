@@ -3,12 +3,16 @@
 Minimal RV32I-subset assembler for the pipelined processor.
 
 Supports exactly the instructions pipelined.sv decodes:
-    add sub and or slt          (R-type)
-    addi andi ori slti          (I-type)
-    lw                          (I-type load)
+    add sub sll slt sltu xor srl sra or and     (R-type, all ten)
+    addi slti sltiu xori ori andi               (I-type)
+    slli srli srai                              (I-type shift, 5-bit shamt)
+    beq bne blt bge bltu bgeu                   (B-type, all six)
+    lui auipc                                   (U-type, 20-bit upper immediate)
+    lb lw                       (I-type loads)
     sw                          (S-type)
     beq                         (B-type)
     jal                         (J-type)
+    jalr                        (I-type, rd, offset(rs1))
     nop                         (pseudo: addi x0, x0, 0)
 
 Labels are supported:  "loop:" on its own line or before an instruction.
@@ -22,18 +26,43 @@ import re
 import sys
 
 R_FUNCT = {
-    "add": (0b0000000, 0b000),
-    "sub": (0b0100000, 0b000),
-    "slt": (0b0000000, 0b010),
-    "or":  (0b0000000, 0b110),
-    "and": (0b0000000, 0b111),
+    "add":  (0b0000000, 0b000),
+    "sub":  (0b0100000, 0b000),
+    "sll":  (0b0000000, 0b001),
+    "slt":  (0b0000000, 0b010),
+    "sltu": (0b0000000, 0b011),
+    "xor":  (0b0000000, 0b100),
+    "srl":  (0b0000000, 0b101),
+    "sra":  (0b0100000, 0b101),
+    "or":   (0b0000000, 0b110),
+    "and":  (0b0000000, 0b111),
 }
 
 I_FUNCT = {
-    "addi": 0b000,
-    "slti": 0b010,
-    "ori":  0b110,
-    "andi": 0b111,
+    "addi":  0b000,
+    "slti":  0b010,
+    "sltiu": 0b011,
+    "xori":  0b100,
+    "ori":   0b110,
+    "andi":  0b111,
+}
+
+B_FUNCT = {
+    "beq":  0b000,
+    "bne":  0b001,
+    "blt":  0b100,
+    "bge":  0b101,
+    "bltu": 0b110,
+    "bgeu": 0b111,
+}
+
+# Shift-immediates are I-type in shape only. Bits [24:20] hold a 5-bit shift
+# amount, and bits [31:25] carry the same shift-type field the R-type forms use.
+# They are NOT a 12-bit signed immediate, so they get their own encoder.
+SHIFT_I = {
+    "slli": (0b0000000, 0b001),
+    "srli": (0b0000000, 0b101),
+    "srai": (0b0100000, 0b101),
 }
 
 
@@ -64,6 +93,21 @@ def fits(val, bits):
 def enc_r(rd, rs1, rs2, name):
     f7, f3 = R_FUNCT[name]
     return (f7 << 25) | (rs2 << 20) | (rs1 << 15) | (f3 << 12) | (rd << 7) | 0b0110011
+
+
+def enc_u(rd, val, opcode):
+    """U-type. The operand is the 20-bit FIELD, not the final register value:
+    `lui x1, 0x12345` puts 0x12345000 in x1."""
+    if not -(1 << 19) <= val <= (1 << 20) - 1:
+        raise ValueError(f"U-type immediate {val} does not fit in 20 bits")
+    return ((val & 0xFFFFF) << 12) | (rd << 7) | opcode
+
+
+def enc_shift_i(rd, rs1, shamt, f7, f3):
+    if not 0 <= shamt <= 31:
+        raise ValueError(f"shift amount {shamt} out of range 0..31")
+    return (f7 << 25) | (shamt << 20) | (rs1 << 15) | (f3 << 12) | \
+           (rd << 7) | 0b0010011
 
 
 def enc_i(rd, rs1, val, f3, opcode):
@@ -136,24 +180,38 @@ def assemble(text):
                 w = enc_i(0, 0, 0, 0b000, 0b0010011)
             elif mnem in R_FUNCT:
                 w = enc_r(reg(args[0]), reg(args[1]), reg(args[2]), mnem)
+            elif mnem in SHIFT_I:
+                f7, f3 = SHIFT_I[mnem]
+                w = enc_shift_i(reg(args[0]), reg(args[1]), imm(args[2]), f7, f3)
             elif mnem in I_FUNCT:
                 w = enc_i(reg(args[0]), reg(args[1]), imm(args[2]),
                           I_FUNCT[mnem], 0b0010011)
-            elif mnem == "lw":
+            elif mnem == "jalr":
                 m = MEMREF.fullmatch(args[1])
                 if not m:
-                    raise ValueError("lw needs offset(reg)")
+                    raise ValueError("jalr needs offset(reg)")
                 w = enc_i(reg(args[0]), reg(m.group(2)), imm(m.group(1)),
-                          0b010, 0b0000011)
+                          0b000, 0b1100111)
+            elif mnem in ("lb", "lw"):
+                m = MEMREF.fullmatch(args[1])
+                if not m:
+                    raise ValueError(f"{mnem} needs offset(reg)")
+                w = enc_i(reg(args[0]), reg(m.group(2)), imm(m.group(1)),
+                          0b000 if mnem == "lb" else 0b010, 0b0000011)
             elif mnem == "sw":
                 m = MEMREF.fullmatch(args[1])
                 if not m:
                     raise ValueError("sw needs offset(reg)")
                 w = enc_s(reg(args[0]), reg(m.group(2)), imm(m.group(1)),
                           0b010, 0b0100011)
-            elif mnem == "beq":
+            elif mnem == "lui":
+                w = enc_u(reg(args[0]), imm(args[1]), 0b0110111)
+            elif mnem == "auipc":
+                w = enc_u(reg(args[0]), imm(args[1]), 0b0010111)
+            elif mnem in B_FUNCT:
                 off = target(args[2], labels, addr)
-                w = enc_b(reg(args[0]), reg(args[1]), off, 0b000, 0b1100011)
+                w = enc_b(reg(args[0]), reg(args[1]), off,
+                          B_FUNCT[mnem], 0b1100011)
             elif mnem == "jal":
                 off = target(args[1], labels, addr)
                 w = enc_j(reg(args[0]), off, 0b1101111)

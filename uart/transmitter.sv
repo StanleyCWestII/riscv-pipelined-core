@@ -1,3 +1,11 @@
+// What a UART Echo is:
+// You input a character in a terminal, and it "echoes" it back.
+
+// From start to finish,
+// Terminal --> USB Cable --> FT2232H Channel B --> FPGA pin C4
+// --> receiver.sv --> processor --> transmitter.sv -->
+// FT2232H pin D4 --> USB Cable --> Terminal
+
 module transmitter(input logic clk, Send, input logic [9:0] Input, output logic tx, Busy = 0);
 
 logic [3:0] Index = 0;

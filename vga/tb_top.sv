@@ -44,7 +44,7 @@ module tb_top;
     logic [3:0]  Red, Green, Blue;
 
     pipelined core (
-        .clk(clk), .reset(reset),
+        .Clk(clk), .Reset(reset),
         .RxValid(RxValid), .TxBusy(TxBusy), .RxData(RxData),
         .TxSend(TxSend), .TxByte(TxByte),
         .VGAReg(VGAReg)

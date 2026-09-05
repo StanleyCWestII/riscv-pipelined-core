@@ -1,0 +1,40 @@
+[*] GTKWave save file for the pipelined core regression.
+[*] Open with:  gtkwave -a wave.gtkw wave.vcd
+[dumpfile] "wave.vcd"
+[timestart] 0
+[sst_width] 260
+[signals_width] 220
+[sst_expanded] 1
+[treeopen] tb.
+[treeopen] tb.dut.
+@28
+tb.clk
+tb.reset
+@200
+-FETCH
+@22
+tb.dut.PCF[31:0]
+tb.dut.PCFNext[31:0]
+@28
+tb.dut.StallF
+@200
+-DECODE
+@22
+tb.dut.PCD[31:0]
+tb.dut.InstrD[31:0]
+@28
+tb.dut.StallD
+tb.dut.FlushD
+@200
+-EXECUTE / BRANCH
+@22
+tb.dut.PCE[31:0]
+@28
+tb.dut.isBranchE
+tb.dut.BranchE
+tb.dut.MisPredict
+tb.dut.FlushE
+@200
+-MEMORY
+@28
+tb.dut.MemStall

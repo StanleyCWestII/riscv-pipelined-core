@@ -37,7 +37,7 @@ Tested on a Nexys A7-100T, part xc7a100tcsg324-1. Assemble a program first, sinc
 python3 asm.py uart/echo.s memory.hex   # or vga/vgatest.s
 ```
 
-The pre-synthesis hook below is required. pipelined.sv:313 loads the ROM with $readmemh("memory.hex", InstrMem), and Vivado resolves that relative path against the synthesis run directory, not the repo root. Adding the file with add_files does not fix it. Run from Tcl console:
+The pre-synthesis hook below is required. pipelined.sv:318 loads the ROM with $readmemh("memory.hex", InstrMem), and Vivado resolves that relative path against the synthesis run directory, not the repo root. Adding the file with add_files does not fix it. Run from Tcl console:
 
 ```
 set_property STEPS.SYNTH_DESIGN.TCL.PRE "fpga/pre_synth.tcl" [get_runs synth_1]
@@ -69,11 +69,11 @@ The echo demo needs no external hardware. Channel B of the FT2232H is a USB seri
 
 The processor is split into five stages: Fetch, Decode, Execute, Memory, and Writeback. 
 
-The Fetch stage includes the Program Counter, Instruction Memory, PCNext multiplexer and adder, and additional branch predictor logic with an extra adder to compute the predicted branch and wiring to actually predict a branch. 
+The Fetch stage includes the Program Counter, Instruction Memory, PCNext multiplexer and adder, and additional branch predictor logic with another adder to prematurely predict the branch destination, which allows the processor to skip BTB.
 
 The Decode stage includes the Register File and Extender. It defines the source registers and destination register while also sign-extending the immediate and passing these signals along to the Execute stage.
 
-The Execute stage holds the 32-bit ALU, which features several multiplexers on its inputs which further depend on various control signals from the Control Unit. It performs addition, subtraction, and, or, and slt operations, and also defends against overflowing through several steps:
+The Execute stage holds the 32-bit ALU, which features several multiplexers on its inputs which further depend on various control signals from the Control Unit. It performs addition, subtraction, and, or, and slt operations, and also detects if the product overflowed for slt comparisons through several steps:
 1. Determines whether the operation could overflow through the operand signs.
 2. Determines whether the answer came out wrong through the operand signs.
 3. Determines whether the result ACTUALLY overflowed.
@@ -86,7 +86,11 @@ The Memory stage holds Data Memory, MMIO logic for the UART Echo and VGA Pattern
 
 The Writeback stage is the final stage and is mainly a multiplexer which serves to determine what signal to write back to the register file. 
 
-The Hazard Unit makes use of forwarding, flushing, and stalling to bypass typical pipelining errors. It holds the capability to stall all five stages and flush the Decode and Execute stages. Forwarding is decided by equality checks on the source and destination registers using a control signal ForwardAE and ForwardBE. The stall signals are decided off of two signals, lwStall and MemStall. lwStall fires when the instruction in Execute is a load and the instruction in Decode reads the register that load is about to write. MemStall is attached to the D-cache FSM and fires either on a cache miss or when in the Fetch state of the FSM.
+The Hazard Unit makes use of forwarding, flushing, and stalling to bypass typical pipelining errors. 
+
+- Forwarding is decided by equality checks on the source and destination registers using the control signals ForwardAE and ForwardBE. The instruction in the Memory stage is checked before the Writeback stage, because it holds the newer value. x0 is checked so that nothing can write to it.
+- The stall signals are decided by two signals, lwStall and MemStall. lwStall freezes F, D, and flushes E and fires when the instruction in Execute is a load and the instruction in Decode reads the register that load is about to write. MemStall freezes all stages is attached to the D-Cache FSM and fires either on a cache miss or when in the Fetch state of the FSM.
+- Flushes are handled by FlushD and FlushE. FlushD fires when the branch mispredicts and there is no cache miss. FlushE fires when lwStall is asserted (to remove junk values) or when the branch mispredicts and there is no cache miss.
 
 ### 3b. The Instruction Subset
 

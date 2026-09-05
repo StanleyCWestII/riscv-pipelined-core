@@ -28,7 +28,7 @@ module tb_cache;
     logic [7:0] RxData = 0;
     logic TxSend;  logic [7:0] TxByte;  logic [11:0] VGAReg;
 
-    pipelined dut(.clk(clk), .reset(reset), .RxValid(RxValid), .TxBusy(TxBusy),
+    pipelined dut(.Clk(clk), .Reset(reset), .RxValid(RxValid), .TxBusy(TxBusy),
                   .RxData(RxData), .TxSend(TxSend), .TxByte(TxByte),
                   .VGAReg(VGAReg));
 

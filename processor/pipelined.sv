@@ -1,4 +1,4 @@
-// clk and reset are the only pipeline dependencies
+// Clk and Reset are the only pipeline dependencies
 // TxByte is the outputted letter
 // TxSend tells the transmitter to send the letter out
 // TxBusy tells the processor that the last byte is still being processed
@@ -9,18 +9,18 @@
 // Because RxValid is only high for one cycle, RxReady catches it and holds onto it
 
 // VGAReg is the background color, 4 red, 4 green, 4 blue
-module pipelined(input logic clk, reset, RxValid, TxBusy, input logic [7:0] RxData, output logic TxSend, output logic [7:0] TxByte, output logic [11:0] VGAReg);
+module pipelined(input logic Clk, Reset, RxValid, TxBusy, input logic [7:0] RxData, output logic TxSend, output logic [7:0] TxByte, output logic [11:0] VGAReg);
 
 // Control Unit declarations
-logic [6:0] Op; // signals the type of instruction
-logic [2:0] Funct3; // signals the specific instruction inside the type
+logic [6:0] OpD, OpE; // signals the type of instruction
+logic [2:0] Funct3D, Funct3E, Funct3M, Funct3W; // signals the specific instruction inside the type
 logic [1:0] ALUOp; // tells the ALU's function. 00 is used for lw, sw, and jal.
 // 01 is used for beq. 10 is used for R-type and I-type ALU instructions
-logic Funct7; // tells add apart from sub
+logic [6:0] Funct7; // another differentiator for operations
 
 // Decode Control
-logic [2:0] ALUControlD; // 000 add, 001 sub, 010 and, 011 or, 101 slt
-logic [1:0] ImmSrcD; // what shape is the immediate?
+logic [4:0] ALUControlD; // 000 add, 001 sub, 010 and, 011 or, 101 slt
+logic [2:0] ImmSrcD; // what shape is the immediate?
 logic [1:0] ResultSrcD; // which way writeback comes from: ALU, memory, or PC+4
 logic MemWriteD; // does this write to data memory?
 logic ALUSrcD; // does the ALU's second input come from a register or the immediate
@@ -29,9 +29,9 @@ logic BranchD; // is this a branch?
 logic JumpD; // is this a jump?
 
 // Execute Control
-logic [2:0] ALUControlE;
+logic [4:0] ALUControlE;
 logic [1:0] ResultSrcE, PCSrcE;
-logic MemWriteE, ALUSrcE, RegWriteE, BranchE, JumpE, ZeroE;
+logic MemWriteE, ALUSrcE, RegWriteE, BranchE, JumpE, BranchTaken;
 
 // Memory Control
 logic [1:0] ResultSrcM;
@@ -75,6 +75,7 @@ logic [31:0] SrcBE; // second ALU input after mux
 logic [31:0] ALUSumE; // adder output
 logic [31:0] ALUSrcBE; // takes SrcBE's value and optionally flips for subtraction
 logic [31:0] ZeroExtE; // final result for signed comparison path for slt
+logic [31:0] Target; // used to compute destination for jalr
 logic [4:0] A3E;
 logic SubtractE, N1E, N2E, oVerflowE, SltResultE; // used to compute signed comparison path for slt
 // Memory
@@ -82,6 +83,7 @@ logic [31:0] PCPlus4M, ALUResultM;
 logic [31:0] WDM;
 logic [31:0] RDM;
 logic [4:0] A3M;
+logic [31:0] LByteM, LByteW; // for lb
 // Writeback
 logic [31:0] ALUResultW, PCPlus4W, RDW;
 logic [31:0] WD3W; // the data being written back
@@ -93,7 +95,7 @@ logic [4:0] A1E, A2E;
 logic [1:0] ForwardAE, ForwardBE; // picks where each ALU input comes from. either
 // the register file normally, or a result grabbed early out of Memory or Writeback
 logic StallF, StallD, StallE, StallM, StallW; // freeze the labeled stage
-logic FlushD, FlushE; // resets the stage to 0
+logic FlushD, FlushE; // Resets the stage to 0
 logic lwStall; // pauses the pipeline for one cycle
 logic ReadsRS1, ReadsRS2; // tells whether the source registers were read
 
@@ -125,67 +127,75 @@ logic MemStall; // freezes the pipeline while a miss is being serviced
 logic [4:0] MemCount; // counts down the 15 cycle penalty
 
 // Control Unit logic
-assign Op = InstrD[6:0]; // assigns Op to the first seven bits of Instr
-assign Funct3 = InstrD[14:12]; // assigns Funct3 to bits 14:12 of Instr
-assign Funct7 = InstrD[30]; // assigns Funct7 to bit 30 of Instr
+assign OpD = InstrD[6:0]; // assigns Op to the first seven bits of Instr
+assign Funct3D = InstrD[14:12]; // assigns Funct3 to bits 14:12 of Instr
+assign Funct7 = InstrD[31:25]; // assigns Funct7 to bits 31:25 of Instr
 
 // Main Decoder
 // Based on the opcode, outputs 10 signals for the specific instruction
 always_comb
-    case (Op)
-    // lw
-    7'b0000011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_00_1_0_01_0_00_0_1_0;
+    case (OpD)
+    // I-type loads
+    7'b0000011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_000_1_0_01_0_00_0_1_0;
     // sw
-    7'b0100011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b0_01_1_1_00_0_00_0_1_1;
+    7'b0100011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b0_001_1_1_00_0_00_0_1_1;
     // R-type
-    7'b0110011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_xx_0_0_00_0_10_0_1_1;
-    // beq
-    7'b1100011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b0_10_0_0_00_1_01_0_1_1;
+    7'b0110011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_xxx_0_0_00_0_10_0_1_1;
+    // B-type
+    7'b1100011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b0_010_0_0_00_1_01_0_1_1;
     // I-type ALU
-    7'b0010011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_00_1_0_00_0_10_0_1_0;
+    7'b0010011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_000_1_0_00_0_10_0_1_0;
     // jal
-    7'b1101111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b1_11_1_0_10_0_00_1_0_0;
+    7'b1101111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_011_1_0_10_0_00_1_0_0;
+    // jalr
+    7'b1100111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_000_1_0_10_0_00_1_1_0;
+    // lui
+    7'b0110111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_100_1_0_00_0_00_0_0_0;
+    // auipc
+    7'b0010111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_100_1_0_00_0_00_0_0_0;
     // default lw
-    default: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 13'b0_00_0_0_00_0_00_0_1_0;
+    default: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b0_000_0_0_00_0_00_0_1_0;
 endcase
 
 // ALU Decoder
 always_comb
     case (ALUOp) // Decides whether further thinking is needed
-        2'b00: ALUControlD = 3'b000; // just add
-        2'b01: ALUControlD = 3'b001; // just subtract
+        2'b00: ALUControlD = 5'b00000; // just add
+        2'b01: ALUControlD = 5'b00001; // just subtract
         2'b10: // we need to figure out the operation
         begin
-        case (Funct3) // all R-type and I-type ALU instructions share the same opcode.
+        case (Funct3D) // all R-type and I-type ALU instructions share the same opcode.
         // Funct3 differentiates them
             3'b000: // can mean add, sub, or addi. needs another differentiator
             begin
-                case ({Op[5], Funct7}) // cannot just use Funct7, also need bit 5 of opcode
+                case ({OpD[5], Funct7[5]}) // cannot just use Funct7, also need bit 5 of opcode
                 // due to addi/sub conflicts
-                    2'b11: ALUControlD = 3'b001; // sub
-                    default: ALUControlD = 3'b000; // add
+                    2'b11: ALUControlD = 5'b00001; // sub
+                    default: ALUControlD = 5'b00000; // add
                 endcase
             end
-            3'b010: ALUControlD = 3'b101; // slt
-            3'b110: ALUControlD = 3'b011; // or
-            3'b111: ALUControlD = 3'b010; // and
-            default: ALUControlD = 3'b000;
+            3'b001: ALUControlD = 5'b00111; // sll
+            3'b010: ALUControlD = 5'b00101; // slt
+            3'b011: ALUControlD = 5'b01011; // sltu
+            3'b100: ALUControlD = 5'b00110; // xor
+            3'b101:
+            begin
+                case (Funct7)
+                    7'b000000: ALUControlD = 5'b01000; // srl
+                    7'b0100000: ALUControlD = 5'b01001; // sra
+                    default: ALUControlD = 5'b00000;
+                endcase
+            end
+            3'b110: ALUControlD = 5'b00011; // or
+            3'b111: ALUControlD = 5'b00010; // and
+            default: ALUControlD = 5'b00000;
         endcase
         end
-        default: ALUControlD = 3'b000;
+        default: ALUControlD = 5'b00000;
     endcase
 
-// Zero and PCSrc Logic
-// ZeroE asks if the ALUResult is 0 or not. This is important because beq works by
-// subtracting the two source registers to determine if they're equal.
-always_comb
-    case (ALUResultE)
-        32'b0: ZeroE = 1'b1;
-        default: ZeroE = 1'b0;
-    endcase
-
-// If ZeroE and PredictedE match, MisPredict returns 0. If they differ, it returns 1
-assign MisPredict = ZeroE ^ PredictedE;
+// If BranchTaken and PredictedE match, MisPredict returns 0. If they differ, it returns 1
+assign MisPredict = BranchTaken ^ PredictedE;
 
 // Determines where the PC goes next. A few things happen here
 always_comb
@@ -205,8 +215,8 @@ localparam WeaklyTaken = 2'b01;
 localparam WeaklyNotTaken = 2'b10;
 localparam StronglyNotTaken = 2'b11;
 
-always_ff @(posedge clk, posedge reset)
-    if (reset) // if reset, walks every entry and sets it to 0
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset) // if Reset, walks every entry and sets it to 0
         begin
             for (int i = 0; i < 64; ++i)
             begin
@@ -223,10 +233,10 @@ always_ff @(posedge clk, posedge reset)
 always_comb
     begin
         case (BranchState[PCE[7:2]])
-            StronglyTaken: BranchNextState = ZeroE ? StronglyTaken : WeaklyTaken;
-            WeaklyTaken: BranchNextState = ZeroE ? StronglyTaken : WeaklyNotTaken;
-            WeaklyNotTaken: BranchNextState = ZeroE ? WeaklyTaken : StronglyNotTaken;
-            StronglyNotTaken: BranchNextState = ZeroE ? WeaklyNotTaken : StronglyNotTaken;
+            StronglyTaken: BranchNextState = BranchTaken ? StronglyTaken : WeaklyTaken;
+            WeaklyTaken: BranchNextState = BranchTaken ? StronglyTaken : WeaklyNotTaken;
+            WeaklyNotTaken: BranchNextState = BranchTaken ? WeaklyTaken : StronglyNotTaken;
+            StronglyNotTaken: BranchNextState = BranchTaken ? WeaklyNotTaken : StronglyNotTaken;
         endcase
     end
 
@@ -238,8 +248,8 @@ assign MemReady = (MemCount == 0); // fires when the countdown from 15 hits 0
 assign Victim = ~LRU[ALUResultM[6:4]]; // finds the least recently used by indexing into
 // LRU using 3 bits of ALUResult (giving 8 entries), then inverting
 
-always_ff @(posedge clk, posedge reset)
-    if (reset) // if reset, walks Valid and sets everything to 0
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset) // if Reset, walks Valid and sets everything to 0
         begin
             CacheState <= Idle;
             for (int i = 0; i < 8; ++i)
@@ -293,8 +303,8 @@ always_comb
     endcase
 
 // Program Counter logic
-always_ff @(posedge clk, posedge reset)
-    if (reset) PCF <= 0; // if reset, set PCF to 0
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset) PCF <= 0; // if Reset, set PCF to 0
     else if (~StallF) PCF <= PCFNext; // if the register is NOT stalled, proceed
 
 assign PCPlus4F = PCF + 4; // computes the next address in sequence
@@ -307,7 +317,7 @@ always_comb
         2'b00: PCFNext = PCPlus4F; // standard sequential address, just +4
         2'b01: // a mistake was made or jal
         begin
-            if (isBranchE == 1'b1 && ZeroE == 1'b0) PCFNext = PCPlus4E; // redirects the PC to the actual branch address
+            if (isBranchE == 1'b1 && BranchTaken == 1'b0) PCFNext = PCPlus4E; // redirects the PC to the actual branch address
             else PCFNext = PCTargetE; // otherwise redirect to jal jump address
         end
         2'b10: PCFNext = PCTargetF; // if a branch is predicted, go to the early branch address
@@ -329,8 +339,8 @@ assign PredictedF = ~BranchState[PCF[7:2]][1]; // indexes into the two-bit confi
 // starting 1 and 0. It must be inverted because in this encoding, Taken is 0 and NotTaken is 1.
 
 // Fetch --> Decode Register
-always_ff @(posedge clk, posedge reset)
-    if (reset | FlushD)
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset | FlushD)
     begin
         InstrD <= 0;
         PCD <= 0;
@@ -348,7 +358,11 @@ always_ff @(posedge clk, posedge reset)
     end
 
 // Register Memory logic
-assign A1D = InstrD[19:15]; // first source register
+always_comb
+    case (ReadsRS1)
+        1'b1: A1D = InstrD[19:15]; // normal operation
+        1'b0: A1D = 0; // for lui
+    endcase
 assign A2D = InstrD[24:20]; // second source register
 assign A3D = InstrD[11:7]; // destination register
 
@@ -360,15 +374,17 @@ assign RD2D = (A2D != 0) ? RegFile[A2D] : 0;
 // Extend logic
 always_comb
     case (ImmSrcD)
-        2'b00: ImmExtD = {{21{InstrD[31]}}, InstrD[30:20]}; // I-type: lw, addi, andi, ori, slti
-        2'b01: ImmExtD = {{21{InstrD[31]}}, InstrD[30:25], InstrD[11:7]}; // S-type: sw
-        2'b10: ImmExtD = {{20{InstrD[31]}}, InstrD[7], InstrD[30:25], InstrD[11:8], 1'b0}; // B-type: beq
-        default: ImmExtD = {{12{InstrD[31]}}, InstrD[19:12], InstrD[20], InstrD[30:21], 1'b0}; // J-type: jal
+        3'b000: ImmExtD = {{21{InstrD[31]}}, InstrD[30:20]}; // I-type
+        3'b001: ImmExtD = {{21{InstrD[31]}}, InstrD[30:25], InstrD[11:7]}; // S-type
+        3'b010: ImmExtD = {{20{InstrD[31]}}, InstrD[7], InstrD[30:25], InstrD[11:8], 1'b0}; // B-type
+        3'b011: ImmExtD = {{12{InstrD[31]}}, InstrD[19:12], InstrD[20], InstrD[30:21], 1'b0}; // J-type
+        3'b100: ImmExtD = {InstrD[31:12], 12'b0}; // U-type
+        default: ImmExtD = {{12{InstrD[31]}}, InstrD[19:12], InstrD[20], InstrD[30:21], 1'b0}; // J-type
     endcase
 
 // Decode --> Execute Register
-always_ff @(posedge clk, posedge reset)
-    if (reset | FlushE)
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset | FlushE)
     begin
         RD1E <= 0;
         RD2E <= 0;
@@ -387,6 +403,8 @@ always_ff @(posedge clk, posedge reset)
         A2E <= 0;
         isBranchE <= 0;
         PredictedE <= 0;
+        Funct3E <= 0;
+        OpE <= 0;
     end
     else if (~StallE)
     begin
@@ -407,10 +425,19 @@ always_ff @(posedge clk, posedge reset)
         A2E <= A2D;
         isBranchE <= isBranchD;
         PredictedE <= PredictedD;
+        Funct3E <= Funct3D;
+        OpE <= OpD;
     end
 
 // computes the branch destination, PC plus offset
-assign PCTargetE = PCE + ImmExtE;
+
+assign Target = SrcAE + SrcBE;
+
+always_comb
+    case (OpE)
+        7'b1100111: PCTargetE = {Target[31:1], 1'b0};
+        default: PCTargetE = PCE + ImmExtE;
+    endcase
 
 // ALU logic
 // a - b = a + (~b) + 1
@@ -427,6 +454,7 @@ always_comb
         2'b00: SrcAE = RD1E; // register file, normal case
         2'b01: SrcAE = WD3W; // grab it from Writeback
         2'b10: SrcAE = ALUResultM; // grab it from Memory
+        2'b11: SrcAE = PCE; // grab the PC
         default: SrcAE = RD1E;
     endcase
 
@@ -449,17 +477,35 @@ always_comb
 always_comb
     case (ALUControlE)
     // For sub and slt we need subtraction, so we invert b, which is ALUSrcBE
-        3'b001: ALUSrcBE = ~SrcBE; // sub
-        3'b101: ALUSrcBE = ~SrcBE; // slt
+        5'b00001: ALUSrcBE = ~SrcBE; // sub
+        5'b00101: ALUSrcBE = ~SrcBE; // slt
         default: ALUSrcBE = SrcBE; // otherwise resume normal computation
     endcase
 
+// primary ALU for performing arithmetic operations
 always_comb
     case (ALUControlE)
-        3'b010: ALUResultE = SrcAE & ALUSrcBE; // and operation
-        3'b011: ALUResultE = SrcAE | ALUSrcBE; // or operation
-        3'b101: ALUResultE = ZeroExtE; // slt operation
+        5'b00010: ALUResultE = SrcAE & ALUSrcBE; // and operation
+        5'b00011: ALUResultE = SrcAE | ALUSrcBE; // or operation
+        5'b00101: ALUResultE = ZeroExtE; // slt operation
+        5'b00110: ALUResultE = SrcAE ^ SrcBE; // xor operation
+        5'b00111: ALUResultE = SrcAE << SrcBE[4:0]; // sll operation
+        5'b01000: ALUResultE = SrcAE >> SrcBE[4:0]; // srl operation
+        5'b01001: ALUResultE = $signed(SrcAE) >>> SrcBE[4:0]; // sra operation
+        5'b01011: ALUResultE = (SrcAE < SrcBE) ? 1 : 0; // sltu operation
         default: ALUResultE = ALUSumE; // add/sub operation
+    endcase
+
+// For branches
+always_comb
+    case (Funct3E)
+        3'b000: BranchTaken = ($signed(SrcAE) == $signed(SrcBE)) ? 1 : 0; // beq
+        3'b001: BranchTaken = ($signed(SrcAE) != $signed(SrcBE)) ? 1 : 0; // bne
+        3'b100: BranchTaken = ($signed(SrcAE) < $signed(SrcBE)) ? 1 : 0; // blt
+        3'b101: BranchTaken = ($signed(SrcAE) >= $signed(SrcBE)) ? 1 : 0; // bge
+        3'b110: BranchTaken = (SrcAE < SrcBE) ? 1 : 0; // bltu
+        3'b111: BranchTaken = (SrcAE >= SrcBE) ? 1 : 0; // bgeu
+        default: BranchTaken = 0;
     endcase
 
 // Overflow Defense
@@ -470,8 +516,8 @@ assign SltResultE = oVerflowE ^ ALUSumE[31]; // the sign bit, flipped if it lied
 assign ZeroExtE = {{31{1'b0}}, SltResultE}; // that one bit padded out to 32
 
 // Execute --> Memory Register
-always_ff @(posedge clk, posedge reset)
-    if (reset)
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset)
     begin
         ALUResultM <= 0;
         WDM <= 0;
@@ -480,6 +526,7 @@ always_ff @(posedge clk, posedge reset)
         RegWriteM <= 0;
         ResultSrcM <= 0;
         MemWriteM <= 0;
+        Funct3M <= 0;
     end
     else if (~StallM)
     begin
@@ -490,6 +537,7 @@ always_ff @(posedge clk, posedge reset)
         RegWriteM <= RegWriteE;
         ResultSrcM <= ResultSrcE;
         MemWriteM <= MemWriteE;
+        Funct3M <= Funct3E;
     end
 
 // Data Memory logic
@@ -512,6 +560,15 @@ always_comb
             // sure nothing latches onto the garbage
             RDM = Hit0 ? DCache[ALUResultM[6:4]][0][ALUResultM[3:2]]
             : DCache[ALUResultM[6:4]][1][ALUResultM[3:2]];
+
+            // uses the bottom bits of ALUResult to decide which byte out of RDM to load
+            case (ALUResultM[1:0])
+                2'b00: LByteM = {{24{RDM[7]}}, RDM[7:0]};
+                2'b01: LByteM = {{24{RDM[15]}}, RDM[15:8]};
+                2'b10: LByteM = {{24{RDM[23]}}, RDM[23:16]};
+                2'b11: LByteM = {{24{RDM[31]}}, RDM[31:24]};
+                default: LByteM = {{24{RDM[7]}}, RDM[7:0]};
+            endcase
         end
     endcase
 
@@ -532,29 +589,29 @@ assign Hit = Hit0 || Hit1;
 assign Miss = MemoryAccess && ~Hit && ~ALUResultM[10] && (ResultSrcM == 2'b01);
 
 // Slow Memory logic
-always_ff @(posedge clk, posedge reset)
-    if (reset) MemCount <= 0;
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset) MemCount <= 0;
     // Purely to test the D-cache. We create a 15-cycle latency by firing MemReady
     // every time MemCount == 0, and we initially set MemCount to 0 and count down
-    // by 1 every clk cycle.
+    // by 1 every Clk cycle.
     else if (CacheState == Idle && Miss) MemCount <= 15;
     else if (CacheState == Fetch) MemCount <= MemCount - 1;
 
 // VGA logic
-always_ff @(posedge clk, posedge reset)
+always_ff @(posedge Clk, posedge Reset)
 begin
-    if (reset) VGAReg <= 0;
+    if (Reset) VGAReg <= 0;
     // if it's the fourth peripheral slot, it IS a peripheral, and this is a store
     else if ((ALUResultM[3:2] == 2'b11) && (ALUResultM[10]) && (MemWriteM == 1'b1)) VGAReg <= WDM[11:0];
 end
 
-always_ff @(posedge clk, posedge reset)
-    if (reset) RxReady <= 0;
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset) RxReady <= 0;
     else if (RxValid) RxReady <= 1;
     // if it IS a peripheral, if it's the third peripheral slot, and it's a load
     else if (ALUResultM[10] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
 
-always_ff @(posedge clk)
+always_ff @(posedge Clk)
     begin
         // if it's a write to memory and not a peripheral, DataMem indexed with
         // 7 bits gets WDM
@@ -569,8 +626,8 @@ assign TxSend = MemWriteM && ALUResultM[10] && (ALUResultM[3:2] == 2'b00);
 assign TxByte = WDM[7:0];
 
 // Memory --> Writeback Register
-always_ff @(posedge clk, posedge reset)
-    if (reset)
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset)
     begin
         RDW <= 0;
         ALUResultW <= 0;
@@ -578,6 +635,8 @@ always_ff @(posedge clk, posedge reset)
         A3W <= 0;
         RegWriteW <= 0;
         ResultSrcW <= 0;
+        Funct3W <= 0;
+        LByteW <= 0;
     end
     else if (~StallW)
     begin
@@ -587,6 +646,8 @@ always_ff @(posedge clk, posedge reset)
         A3W <= A3M;
         RegWriteW <= RegWriteM;
         ResultSrcW <= ResultSrcM;
+        Funct3W <= Funct3M;
+        LByteW <= LByteM;
     end
 
 // End Mux logic
@@ -594,13 +655,19 @@ always_ff @(posedge clk, posedge reset)
 always_comb
     case (ResultSrcW)
         2'b00: WD3W = ALUResultW; // writes ALUResult back
-        2'b01: WD3W = RDW; // writes the read data back
+        2'b01:
+        begin
+            case (Funct3W)
+                3'b000: WD3W = LByteW; // lb
+                3'b010: WD3W = RDW; // lw
+            endcase
+        end
         2'b10: WD3W = PCPlus4W; // writes next sequential address back
         default: WD3W = ALUResultW;
     endcase
 
-always_ff @(negedge clk)
-    // writes on the negative edge of clk because instructions in decode read the
+always_ff @(negedge Clk)
+    // writes on the negative edge of Clk because instructions in decode read the
     // register file combinationally. If this was written on the posedge, it would
     // read stale data.S
     if (RegWriteW) RegFile[A3W] <= WD3W;
@@ -613,6 +680,8 @@ begin
     if ((A1E == A3M) && RegWriteM && (A1E != 0)) ForwardAE = 2'b10;
     // Same check for writeback
     else if ((A1E == A3W) && RegWriteW && (A1E != 0)) ForwardAE = 2'b01;
+    // for auipc
+    else if (OpE == 7'b0010111) ForwardAE = 2'b11;
     // if nothing, use the register file
     else ForwardAE = 2'b00;
 end

@@ -15,7 +15,7 @@ module tb;
 
     logic clk, reset;
 
-    pipelined dut(.clk(clk), .reset(reset));
+    pipelined dut(.Clk(clk), .Reset(reset));
 
     // ---------------------------------------------------------------- clock
     initial clk = 1'b0;
@@ -294,6 +294,112 @@ module tb;
         check_reg( 6, 32'h0000_0000);   // 0       < INT_MIN (subtract overflows)
         check_reg( 7, 32'h0000_0001);   // INT_MIN < -1
         check_reg( 9, 32'h0000_0000);   // 1       < INT_MIN (subtract overflows)
+        report();
+
+        // ----------------------------------------- T9: shifts and xor
+        run_program("T9 shift/xor", "processor/tests/t9_shift.hex", 400);
+        check_reg( 6, 32'h0000_0006);   // xor   12 ^ 10
+        check_reg( 7, 32'h0000_0000);   // xor   a ^ a
+        check_reg( 8, 32'hFFFF_FFF3);   // xori  NOT 12
+        check_reg( 9, 32'h0000_0006);   // xori  12 ^ 10
+        check_reg(10, 32'h0000_00C0);   // sll   12 << 4
+        check_reg(11, 32'h0000_00C0);   // sll   shift amount 36 masks to 4
+        check_reg(12, 32'h0000_00C0);   // slli  12 << 4
+        check_reg(21, 32'h0000_000C);   // sll   shift by 0
+        check_reg(13, 32'h0FFF_FFFF);   // srl   zero fill
+        check_reg(14, 32'h0FFF_FFFF);   // srli  zero fill
+        check_reg(19, 32'h0FFF_FFF8);   // srl   0xFFFFFF80 >> 4
+        check_reg(15, 32'hFFFF_FFFF);   // sra   sign fill keeps -1
+        check_reg(16, 32'hFFFF_FFFF);   // srai  sign fill keeps -1
+        check_reg(18, 32'hFFFF_FFF8);   // sra   -128 >> 4 = -8
+        check_reg(20, 32'hFFFF_FFF8);   // srai  -128 >> 4 = -8
+        report();
+
+        // ------------------------------------ T10: unsigned comparison
+        run_program("T10 sltu", "processor/tests/t10_sltu.hex", 400);
+        check_reg( 5, 32'h0000_0001);   // slt    -1 < 1          signed
+        check_reg( 6, 32'h0000_0000);   // sltu   same bits, unsigned
+        check_reg( 7, 32'h0000_0001);   // sltu   1 < 4294967295
+        check_reg( 8, 32'h0000_0000);   // sltu   equal
+        check_reg( 9, 32'h0000_0001);   // sltu   10 < 12
+        check_reg(10, 32'h0000_0000);   // sltu   12 < 10
+        check_reg(11, 32'h0000_0001);   // sltiu  1 < 5
+        check_reg(12, 32'h0000_0000);   // sltiu  4294967295 < 5
+        check_reg(13, 32'h0000_0001);   // slti   signed contrast
+        check_reg(14, 32'h0000_0001);   // sltiu  0 < 1
+        check_reg(15, 32'h0000_0001);   // sltiu  immediate sign-extends
+        report();
+
+        // --------------------------------- T11: all six branch conditions
+        // 0 means the branch was taken, 1 means it fell through.
+        run_program("T11 branch cond", "processor/tests/t11_branch.hex", 400);
+        check_reg(10, 32'h0000_0000);   // beq   5 == 5        taken
+        check_reg(11, 32'h0000_0000);   // bne   5 != 3        taken
+        check_reg(21, 32'h0000_0001);   // bne   5 != 5        not taken
+        check_reg(12, 32'h0000_0000);   // blt   3 <  5        taken
+        check_reg(13, 32'h0000_0001);   // blt   5 <  3        not taken
+        check_reg(14, 32'h0000_0000);   // bge   5 >= 3        taken
+        check_reg(15, 32'h0000_0000);   // bge   5 >= 5        taken on equal
+        check_reg(16, 32'h0000_0001);   // bge   3 >= 5        not taken
+        check_reg(17, 32'h0000_0000);   // blt   -1 <  1       signed, taken
+        check_reg(18, 32'h0000_0001);   // bltu  huge <  1     unsigned, not taken
+        check_reg(19, 32'h0000_0001);   // bge   -1 >= 1       signed, not taken
+        check_reg(20, 32'h0000_0000);   // bgeu  huge >= 1     unsigned, taken
+        report();
+
+        // ------------------------------------------------------- T12: lui
+        run_program("T12 lui", "processor/tests/t12_lui.hex", 300);
+        check_reg( 5, 32'h1234_5000);   // must ignore the rs1 field (x8 = 0x111)
+        check_reg( 1, 32'h0000_1000);   // smallest nonzero
+        check_reg( 2, 32'hFFFF_F000);   // all ones, no sign extension
+        check_reg( 3, 32'h0000_0000);   // zero
+        check_reg( 4, 32'h1234_5678);   // lui + addi builds a 32-bit constant
+        check_reg( 6, 32'hABCD_E000);   // lui result
+        check_reg( 7, 32'hABCD_E000);   // forwarded out of lui into addi
+        check_reg( 8, 32'h0000_0111);   // untouched
+        report();
+
+        // ----------------------------------------------------- T13: auipc
+        run_program("T13 auipc", "processor/tests/t13_auipc.hex", 300);
+        check_reg( 1, 32'h0000_0014);   // PC of the instruction, not PC+4
+        check_reg( 2, 32'h0000_1018);   // 0x18 + 0x1000
+        check_reg( 3, 32'hFFFF_F01C);   // 0x1c + 0xFFFFF000, wraps cleanly
+        check_reg( 5, 32'h1234_5010);   // rs1 field ignored (x8 = 0x111)
+        check_reg( 6, 32'h0000_2020);   // 0x20 + 0x2000
+        check_reg( 7, 32'h0000_2020);   // forwarded out of auipc into addi
+        check_reg( 8, 32'h0000_0111);   // untouched
+        report();
+
+        // ------------------------------------------------------ T14: jalr
+        run_program("T14 jalr", "processor/tests/t14_jalr.hex", 400);
+        check_reg( 1, 32'd8);     // link from first jump
+        check_reg( 2, 32'd24);    // AUIPC proves target bit 0 was cleared
+        check_reg( 3, 32'd40);    // negative offset, base forwarded from W
+        check_reg( 4, 32'd40);    // immediate consumer of link
+        check_reg( 6, 32'd60);    // rd == rs1 keeps old base for jump
+        check_reg( 7, 32'd60);    // link forwarded at target
+        check_reg(10, 32'd96);    // cold load-use dependency
+        check_reg(11, 32'd96);
+        check_reg(13, 32'd116);   // warm load-use dependency, positive offset
+        check_reg(14, 32'd116);
+        check_reg(15, 32'd7);     // final target reached; discarded link preserves x0
+        check_reg(30, 32'd0);     // wrong-path register writes squashed
+        check_mem( 0, 32'd104);   // intended store survives
+        check_mem( 1, 32'd0);     // wrong-path stores squashed
+        report();
+
+        // -------------------------------------------------------- T15: lb
+        run_program("T15 lb", "processor/tests/t15_lb.hex", 400);
+        check_reg( 1, 32'h80FF_7F01); // source word built correctly
+        check_reg( 2, 32'h0000_0001); // lane 0, positive
+        check_reg( 3, 32'h0000_007F); // lane 1, positive
+        check_reg( 4, 32'hFFFF_FFFF); // lane 2, negative
+        check_reg( 5, 32'hFFFF_FF80); // lane 3, negative
+        check_reg( 7, 32'h0000_0001); // negative offset from nonzero base
+        check_reg( 8, 32'hFFFF_FF80); // positive offset from nonzero base
+        check_reg(10, 32'h0000_0000); // load-use stall and forwarding
+        check_reg(12, 32'h0000_007F); // forwarded base address
+        check_mem( 0, 32'h80FF_7F01); // source word reached main memory
         report();
 
         // ------------------------------------------------------- summary
