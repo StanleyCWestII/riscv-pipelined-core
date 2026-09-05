@@ -162,6 +162,32 @@ module tb;
         end
     endtask
 
+    // A trap is terminal on this core: Decode holds it and freezes Fetch.
+    // Check both the externally visible cause and that Fetch remains parked.
+    task automatic check_trap(input logic [1:0] expect_cause);
+        logic [31:0] trap_pc;
+        if (dut.TrapCause === expect_cause) begin
+            pass_test++; pass_total++;
+        end
+        else begin
+            fail_test++; fail_total++;
+            $display("  FAIL  %-14s TrapCause  expected %02b  got %02b",
+                     current, expect_cause, dut.TrapCause);
+        end
+
+        trap_pc = dut.PCF;
+        repeat (5) @(posedge clk);
+        #1;
+        if (dut.PCF === trap_pc) begin
+            pass_test++; pass_total++;
+        end
+        else begin
+            fail_test++; fail_total++;
+            $display("  FAIL  %-14s PC moved after trap: %08h -> %08h",
+                     current, trap_pc, dut.PCF);
+        end
+    endtask
+
     task automatic report();
         string verdict;
         verdict = (fail_test == 0) ? "PASS" : "**FAIL**";
@@ -395,11 +421,54 @@ module tb;
         check_reg( 3, 32'h0000_007F); // lane 1, positive
         check_reg( 4, 32'hFFFF_FFFF); // lane 2, negative
         check_reg( 5, 32'hFFFF_FF80); // lane 3, negative
+        check_reg(13, 32'h0000_0001); // lbu lane 0
+        check_reg(14, 32'h0000_007F); // lbu lane 1
+        check_reg(15, 32'h0000_00FF); // lbu lane 2, no sign extension
+        check_reg(16, 32'h0000_0080); // lbu lane 3, no sign extension
         check_reg( 7, 32'h0000_0001); // negative offset from nonzero base
         check_reg( 8, 32'hFFFF_FF80); // positive offset from nonzero base
         check_reg(10, 32'h0000_0000); // load-use stall and forwarding
         check_reg(12, 32'h0000_007F); // forwarded base address
         check_mem( 0, 32'h80FF_7F01); // source word reached main memory
+        report();
+
+        // -------------------------------------------------------- T16: lh
+        run_program("T16 lh/lhu", "processor/tests/t16_lh.hex", 400);
+        check_reg( 1, 32'h80FF_7F01); // source word
+        check_reg( 2, 32'h0000_7F01); // lh low half, sign bit clear
+        check_reg( 3, 32'h0000_7F01); // lhu low half
+        check_reg( 4, 32'hFFFF_80FF); // lh high half, sign extension
+        check_reg( 5, 32'h0000_80FF); // lhu high half
+        check_reg( 7, 32'h0000_7F01); // negative offset from nonzero base
+        check_reg( 8, 32'h0000_80FF); // nonzero base, unsigned high half
+        check_reg(10, 32'hFFFF_8100); // load-use dependency
+        report();
+
+        // ------------------------------------------------------- T17: sb/sh
+        run_program("T17 sb/sh", "processor/tests/t17_sb_sh.hex", 400);
+        check_reg( 1, 32'hAABB_CCDD); // original word
+        check_reg( 6, 32'hAABB_CCDD); // cache-line fill before partial stores
+        check_reg( 7, 32'h0000_6655); // halfword source
+        check_mem( 0, 32'h6655_5555); // all byte and halfword stores merged
+        report();
+
+        // -------------------------------------------------- T18: ecall trap
+        run_program("T18 ecall", "processor/tests/t18_ecall.hex", 40);
+        check_trap(2'b01);
+        check_reg(1, 32'h0000_0007); // older instruction drains and retires
+        check_reg(2, 32'h0000_0000); // instruction after ecall never executes
+        report();
+
+        // ------------------------------------------------- T19: ebreak trap
+        run_program("T19 ebreak", "processor/tests/t19_ebreak.hex", 40);
+        check_trap(2'b10);
+        check_reg(2, 32'h0000_0000); // instruction after ebreak never executes
+        report();
+
+        // -------------------------------------------- T20: fence is a NOP
+        run_program("T20 fence", "processor/tests/t20_fence.hex", 100);
+        check_reg(1, 32'h0000_0007); // instruction before fence executes
+        check_reg(2, 32'h0000_0008); // fence advances; consumer after it executes
         report();
 
         // ------------------------------------------------------- summary

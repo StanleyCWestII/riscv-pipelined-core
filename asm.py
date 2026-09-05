@@ -8,11 +8,13 @@ Supports exactly the instructions pipelined.sv decodes:
     slli srli srai                              (I-type shift, 5-bit shamt)
     beq bne blt bge bltu bgeu                   (B-type, all six)
     lui auipc                                   (U-type, 20-bit upper immediate)
-    lb lw                       (I-type loads)
-    sw                          (S-type)
+    lb lbu lh lhu lw           (I-type loads)
+    sb sh sw                    (S-type)
     beq                         (B-type)
     jal                         (J-type)
     jalr                        (I-type, rd, offset(rs1))
+    ecall ebreak                (SYSTEM traps)
+    fence                       (memory-ordering no-op on this core)
     nop                         (pseudo: addi x0, x0, 0)
 
 Labels are supported:  "loop:" on its own line or before an instruction.
@@ -178,6 +180,19 @@ def assemble(text):
         try:
             if mnem == "nop":
                 w = enc_i(0, 0, 0, 0b000, 0b0010011)
+            elif mnem == "ecall":
+                if args:
+                    raise ValueError("ecall takes no operands")
+                w = 0x00000073
+            elif mnem == "ebreak":
+                if args:
+                    raise ValueError("ebreak takes no operands")
+                w = 0x00100073
+            elif mnem == "fence":
+                if args:
+                    raise ValueError("fence takes no operands")
+                # Canonical assembler spelling: fence iorw, iorw.
+                w = 0x0FF0000F
             elif mnem in R_FUNCT:
                 w = enc_r(reg(args[0]), reg(args[1]), reg(args[2]), mnem)
             elif mnem in SHIFT_I:
@@ -192,18 +207,21 @@ def assemble(text):
                     raise ValueError("jalr needs offset(reg)")
                 w = enc_i(reg(args[0]), reg(m.group(2)), imm(m.group(1)),
                           0b000, 0b1100111)
-            elif mnem in ("lb", "lw"):
+            elif mnem in ("lb", "lbu", "lh", "lhu", "lw"):
                 m = MEMREF.fullmatch(args[1])
                 if not m:
                     raise ValueError(f"{mnem} needs offset(reg)")
                 w = enc_i(reg(args[0]), reg(m.group(2)), imm(m.group(1)),
-                          0b000 if mnem == "lb" else 0b010, 0b0000011)
-            elif mnem == "sw":
+                          {"lb": 0b000, "lbu": 0b100, "lh": 0b001,
+                           "lhu": 0b101, "lw": 0b010}[mnem],
+                          0b0000011)
+            elif mnem in ("sb", "sh", "sw"):
                 m = MEMREF.fullmatch(args[1])
                 if not m:
-                    raise ValueError("sw needs offset(reg)")
+                    raise ValueError(f"{mnem} needs offset(reg)")
                 w = enc_s(reg(args[0]), reg(m.group(2)), imm(m.group(1)),
-                          0b010, 0b0100011)
+                          {"sb": 0b000, "sh": 0b001, "sw": 0b010}[mnem],
+                          0b0100011)
             elif mnem == "lui":
                 w = enc_u(reg(args[0]), imm(args[1]), 0b0110111)
             elif mnem == "auipc":

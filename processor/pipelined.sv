@@ -9,7 +9,7 @@
 // Because RxValid is only high for one cycle, RxReady catches it and holds onto it
 
 // VGAReg is the background color, 4 red, 4 green, 4 blue
-module pipelined(input logic Clk, Reset, RxValid, TxBusy, input logic [7:0] RxData, output logic TxSend, output logic [7:0] TxByte, output logic [11:0] VGAReg);
+module pipelined(input logic Clk, Reset, RxValid, TxBusy, input logic [7:0] RxData, output logic [1:0] TrapCause, output logic TxSend, output logic [7:0] TxByte, output logic [11:0] VGAReg);
 
 // Control Unit declarations
 logic [6:0] OpD, OpE; // signals the type of instruction
@@ -19,7 +19,7 @@ logic [1:0] ALUOp; // tells the ALU's function. 00 is used for lw, sw, and jal.
 logic [6:0] Funct7; // another differentiator for operations
 
 // Decode Control
-logic [4:0] ALUControlD; // 000 add, 001 sub, 010 and, 011 or, 101 slt
+logic [4:0] ALUControlD; // determines the operation performed by the ALU
 logic [2:0] ImmSrcD; // what shape is the immediate?
 logic [1:0] ResultSrcD; // which way writeback comes from: ALU, memory, or PC+4
 logic MemWriteD; // does this write to data memory?
@@ -65,6 +65,7 @@ logic [31:0] RD2D; // data read out of A2
 logic [4:0] A1D; // address of the first source register
 logic [4:0] A2D; // address of the second source register
 logic [4:0] A3D; // address of the destination register
+logic ValidD;
 
 // Execute
 logic [31:0] RD1E, RD2E, PCE, ImmExtE, PCPlus4E;
@@ -78,16 +79,24 @@ logic [31:0] ZeroExtE; // final result for signed comparison path for slt
 logic [31:0] Target; // used to compute destination for jalr
 logic [4:0] A3E;
 logic SubtractE, N1E, N2E, oVerflowE, SltResultE; // used to compute signed comparison path for slt
+logic ValidE;
 // Memory
 logic [31:0] PCPlus4M, ALUResultM;
 logic [31:0] WDM;
 logic [31:0] RDM;
 logic [4:0] A3M;
-logic [31:0] LByteM, LByteW; // for lb
+logic [31:0] LByteM; // for lb
+logic [31:0] UByteM; // for lbu
+logic [31:0] LHalfM; // for lh
+logic [31:0] UHalfM; // for lhu
+logic ValidM;
 // Writeback
 logic [31:0] ALUResultW, PCPlus4W, RDW;
 logic [31:0] WD3W; // the data being written back
 logic [4:0] A3W;
+logic [31:0] LByteW, UByteW;
+logic [31:0] LHalfW, UHalfW;
+logic ValidW;
 
 // HAZARD Unit declarations
 logic [31:0] RD2EI;
@@ -98,6 +107,9 @@ logic StallF, StallD, StallE, StallM, StallW; // freeze the labeled stage
 logic FlushD, FlushE; // Resets the stage to 0
 logic lwStall; // pauses the pipeline for one cycle
 logic ReadsRS1, ReadsRS2; // tells whether the source registers were read
+logic StallBreak;
+logic StallPC;
+logic EmptyPipeline;
 
 // UART Echo declarations
 logic RxReady;
@@ -137,7 +149,7 @@ always_comb
     case (OpD)
     // I-type loads
     7'b0000011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_000_1_0_01_0_00_0_1_0;
-    // sw
+    // S-type
     7'b0100011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b0_001_1_1_00_0_00_0_1_1;
     // R-type
     7'b0110011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_xxx_0_0_00_0_10_0_1_1;
@@ -153,7 +165,11 @@ always_comb
     7'b0110111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_100_1_0_00_0_00_0_0_0;
     // auipc
     7'b0010111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_100_1_0_00_0_00_0_0_0;
-    // default lw
+    // ecall/ebreak
+    7'b1110011: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b1_000_1_0_11_0_00_0_0_0;
+    // fence. NOP for now given this is a pipelined processor with no OoO
+    7'b0001111: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b0;
+    // default I-type load
     default: {RegWriteD, ImmSrcD, ALUSrcD, MemWriteD, ResultSrcD, BranchD, ALUOp, JumpD, ReadsRS1, ReadsRS2} = 14'b0_000_0_0_00_0_00_0_1_0;
 endcase
 
@@ -284,7 +300,28 @@ always_ff @(posedge Clk, posedge Reset)
         // if it's a write to memory, not a peripheral, and there was a hit, WDM
         // gets written into the DCache
         if (MemWriteM && ~ALUResultM[10] && Hit)
-        DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]] <= WDM;
+        begin
+            case (Funct3M)
+                3'b000: // sb
+                begin
+                    case (ALUResultM[1:0])
+                    2'b00: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][7:0] <= WDM[7:0];
+                    2'b01: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][15:8] <= WDM[7:0];
+                    2'b10: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][23:16] <= WDM[7:0];
+                    2'b11: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][31:24] <= WDM[7:0];
+                    endcase
+                end
+                3'b001: // sh
+                begin
+                    case(ALUResultM[1:0])
+                    2'b00: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][15:0] <= WDM[15:0];
+                    2'b01: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][23:8] <= WDM[15:0];
+                    2'b10: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][31:16] <= WDM[15:0];
+                    endcase
+                end
+                3'b010: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]] <= WDM; // sw
+            endcase
+        end
     end
 
 always_comb
@@ -347,6 +384,7 @@ always_ff @(posedge Clk, posedge Reset)
         PCPlus4D <= 0;
         isBranchD <= 0;
         PredictedD <= 0;
+        ValidD <= 0;
     end
     else if (~StallD)
     begin
@@ -355,6 +393,7 @@ always_ff @(posedge Clk, posedge Reset)
         PCPlus4D <= PCPlus4F;
         isBranchD <= isBranchF;
         PredictedD <= PredictedF;
+        ValidD <= 1;
     end
 
 // Register Memory logic
@@ -382,6 +421,39 @@ always_comb
         default: ImmExtD = {{12{InstrD[31]}}, InstrD[19:12], InstrD[20], InstrD[30:21], 1'b0}; // J-type
     endcase
 
+// ecall and ebreak logic
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset)
+    begin
+        TrapCause <= 0;
+    end
+    else if (OpD == 7'b1110011)
+    begin
+        TrapCause <= 2'b00;
+        case (OpD)
+             7'b1110011:
+             begin
+                 case (ImmExtD)
+                    32'b0: TrapCause <= 2'b01; // ecall
+                    {31'b0, 1'b1}: TrapCause <= 2'b10; // ebreak
+                    default: TrapCause <= 2'b01;
+                 endcase
+             end
+             default: TrapCause <= 2'b00; // off
+        endcase
+    end
+
+always_comb
+    case (OpD)
+        7'b1110011:
+        case (ImmExtD)
+            32'b0: StallPC = 1;
+            {31'b0, 1'b1}: StallPC = 1;
+            default: StallPC = 1;
+        endcase
+        default: StallPC = 0;
+    endcase
+
 // Decode --> Execute Register
 always_ff @(posedge Clk, posedge Reset)
     if (Reset | FlushE)
@@ -405,6 +477,7 @@ always_ff @(posedge Clk, posedge Reset)
         PredictedE <= 0;
         Funct3E <= 0;
         OpE <= 0;
+        ValidE <= 0;
     end
     else if (~StallE)
     begin
@@ -427,6 +500,7 @@ always_ff @(posedge Clk, posedge Reset)
         PredictedE <= PredictedD;
         Funct3E <= Funct3D;
         OpE <= OpD;
+        ValidE <= ValidD;
     end
 
 // computes the branch destination, PC plus offset
@@ -527,6 +601,7 @@ always_ff @(posedge Clk, posedge Reset)
         ResultSrcM <= 0;
         MemWriteM <= 0;
         Funct3M <= 0;
+        ValidM <= 0;
     end
     else if (~StallM)
     begin
@@ -538,6 +613,7 @@ always_ff @(posedge Clk, posedge Reset)
         ResultSrcM <= ResultSrcE;
         MemWriteM <= MemWriteE;
         Funct3M <= Funct3E;
+        ValidM <= ValidE;
     end
 
 // Data Memory logic
@@ -563,11 +639,41 @@ always_comb
 
             // uses the bottom bits of ALUResult to decide which byte out of RDM to load
             case (ALUResultM[1:0])
-                2'b00: LByteM = {{24{RDM[7]}}, RDM[7:0]};
-                2'b01: LByteM = {{24{RDM[15]}}, RDM[15:8]};
-                2'b10: LByteM = {{24{RDM[23]}}, RDM[23:16]};
-                2'b11: LByteM = {{24{RDM[31]}}, RDM[31:24]};
-                default: LByteM = {{24{RDM[7]}}, RDM[7:0]};
+                2'b00:
+                begin
+                    LByteM = {{24{RDM[7]}}, RDM[7:0]};
+                    UByteM = {24'b0, RDM[7:0]};
+                    LHalfM = {{16{RDM[15]}}, RDM[15:0]};
+                    UHalfM = {16'b0, RDM[15:0]};
+                end
+                2'b01:
+                begin
+                    LByteM = {{24{RDM[15]}}, RDM[15:8]};
+                    UByteM = {24'b0, RDM[15:8]};
+                    LHalfM = 0;
+                    UHalfM = 0;
+                end
+                2'b10:
+                begin
+                    LByteM = {{24{RDM[23]}}, RDM[23:16]};
+                    UByteM = {24'b0, RDM[23:16]};
+                    LHalfM = {{16{RDM[31]}}, RDM[31:16]};
+                    UHalfM = {16'b0, RDM[31:16]};
+                end
+                2'b11:
+                begin
+                    LByteM = {{24{RDM[31]}}, RDM[31:24]};
+                    UByteM = {24'b0, RDM[31:24]};
+                    LHalfM = 0;
+                    UHalfM = 0;
+                end
+                default:
+                begin
+                    LByteM = {{24{RDM[7]}}, RDM[7:0]};
+                    UByteM = {24'b0, RDM[7:0]};
+                    LHalfM = {{16{RDM[15]}}, RDM[15:0]};
+                    UHalfM = {16'b0, RDM[15:0]};
+                end
             endcase
         end
     endcase
@@ -616,7 +722,28 @@ always_ff @(posedge Clk)
         // if it's a write to memory and not a peripheral, DataMem indexed with
         // 7 bits gets WDM
         if (MemWriteM && ~ALUResultM[10])
-        DataMem[ALUResultM[9:2]] <= WDM;
+        begin
+            case (Funct3M)
+                3'b000: // sb
+                begin
+                    case (ALUResultM[1:0])
+                    2'b00: DataMem[ALUResultM[9:2]][7:0] <= WDM[7:0];
+                    2'b01: DataMem[ALUResultM[9:2]][15:8] <= WDM[7:0];
+                    2'b10: DataMem[ALUResultM[9:2]][23:16] <= WDM[7:0];
+                    2'b11: DataMem[ALUResultM[9:2]][31:24] <= WDM[7:0];
+                    endcase
+                end
+                3'b001: // sh
+                begin
+                    case(ALUResultM[1:0])
+                    2'b00: DataMem[ALUResultM[9:2]][15:0] <= WDM[15:0];
+                    2'b01: DataMem[ALUResultM[9:2]][23:8] <= WDM[15:0];
+                    2'b10: DataMem[ALUResultM[9:2]][31:16] <= WDM[15:0];
+                    endcase
+                end
+                3'b010: DataMem[ALUResultM[9:2]] <= WDM; // sw
+            endcase
+        end
     end
 
 // UART Echo logic
@@ -637,6 +764,10 @@ always_ff @(posedge Clk, posedge Reset)
         ResultSrcW <= 0;
         Funct3W <= 0;
         LByteW <= 0;
+        UByteW <= 0;
+        LHalfW <= 0;
+        UHalfW <= 0;
+        ValidW <= 0;
     end
     else if (~StallW)
     begin
@@ -648,6 +779,10 @@ always_ff @(posedge Clk, posedge Reset)
         ResultSrcW <= ResultSrcM;
         Funct3W <= Funct3M;
         LByteW <= LByteM;
+        UByteW <= UByteM;
+        LHalfW <= LHalfM;
+        UHalfW <= UHalfM;
+        ValidW <= ValidM;
     end
 
 // End Mux logic
@@ -659,17 +794,21 @@ always_comb
         begin
             case (Funct3W)
                 3'b000: WD3W = LByteW; // lb
+                3'b001: WD3W = LHalfW; // lh
                 3'b010: WD3W = RDW; // lw
+                3'b100: WD3W = UByteW; // lbu
+                3'b101: WD3W = UHalfW; // lhu
             endcase
         end
         2'b10: WD3W = PCPlus4W; // writes next sequential address back
+        2'b11: WD3W = {30'b0, TrapCause};
         default: WD3W = ALUResultW;
     endcase
 
 always_ff @(negedge Clk)
     // writes on the negative edge of Clk because instructions in decode read the
     // register file combinationally. If this was written on the posedge, it would
-    // read stale data.S
+    // read stale data.
     if (RegWriteW) RegFile[A3W] <= WD3W;
 
 // Hazard Unit logic
@@ -695,13 +834,15 @@ begin
 end
 
 // stall and flush logic
-assign lwStall = ResultSrcE[0] & ((ReadsRS1 && (A1D == A3E)) | (ReadsRS2 & (A2D == A3E)));
-assign StallF = lwStall || MemStall;
-assign StallD = lwStall || MemStall;
-assign StallE = MemStall;
-assign StallM = MemStall;
-assign StallW = MemStall;
-assign FlushD = (PCSrcE == 2'b01) && ~MemStall;
-assign FlushE = (lwStall || (PCSrcE == 2'b01)) && ~MemStall;
+assign lwStall = ResultSrcE[0] & ((ReadsRS1 && (A1D == A3E)) || (ReadsRS2 & (A2D == A3E)));
+assign StallF = lwStall || MemStall || StallPC || StallBreak || ~(TrapCause == 2'b00);
+assign StallD = lwStall || MemStall || StallBreak || ~(TrapCause == 2'b00);
+assign StallE = MemStall || StallBreak;
+assign StallM = MemStall || StallBreak;
+assign StallW = MemStall || StallBreak;
+assign StallBreak = ((TrapCause == 2'b01 || TrapCause == 2'b10) && EmptyPipeline);
+assign FlushD = ((PCSrcE == 2'b01) && ~MemStall) || StallPC;
+assign FlushE = ((lwStall || (PCSrcE == 2'b01)) && ~MemStall) || StallPC;
+assign EmptyPipeline = ~ValidE && ~ValidM && ~ValidW;
 
 endmodule
