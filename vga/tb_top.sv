@@ -3,9 +3,9 @@
 // This mirrors what top.sv wires together on the board, minus the UART pins.
 // It runs vgatest.hex on the real core and checks two separate things:
 //
-//   Part 1  the colour REGISTER responds to stores at 0x40C and to nothing
+//   Part 1  the colour REGISTER responds to stores at 0x1000C and to nothing
 //           else. Every change to VGAReg is logged, so a store to the UART
-//           at 0x400 or to plain data memory leaking into the VGA register
+//           at 0x10000 or to plain data memory leaking into the VGA register
 //           shows up as an extra entry.
 //
 //   Part 2  the PIXEL OUTPUT actually reflects it. A full 800-tick scanline is
@@ -116,7 +116,12 @@ module tb_top;
         // Load firmware over the DUT's own $readmemh, same idiom as tb.sv.
         $readmemh("vga/vgatest.hex", prog);
         for (int i = 0; i < 64; i++) core.InstrMem[i] = prog[i];
-        for (int i = 0; i < 64; i++) core.DataMem[i]  = 32'h0000_0000;
+        for (int i = 0; i < 4096; i++) begin
+            core.DataMem0[i] = 32'h0000_0000;
+            core.DataMem1[i] = 32'h0000_0000;
+            core.DataMem2[i] = 32'h0000_0000;
+            core.DataMem3[i] = 32'h0000_0000;
+        end
         for (int i = 0; i < 32; i++) core.RegFile[i]  = 32'h0000_0000;
 
         repeat (4) @(posedge clk);
@@ -147,7 +152,7 @@ module tb_top;
         check("register settled on 0xF00", VGAReg === 12'hF00);
 
         if (nchanges > 2) begin
-            $display("        %0d changes seen, expected 2. A store to 0x400 or to plain", nchanges);
+            $display("        %0d changes seen, expected 2. A store to 0x10000 or to plain", nchanges);
             $display("        data memory is reaching the VGA register: decode is too loose.");
         end
 

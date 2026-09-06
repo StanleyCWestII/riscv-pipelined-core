@@ -64,7 +64,7 @@ module tb_cache;
         if (dut.MemoryAccess && !dut.MemStall)          accesses++;
         if (dut.CacheState == 1'b0 && dut.Miss)         misses++;
         if (dut.MemStall)                               stalls++;
-        if (park_found && dut.PCE[7:2] == park_idx)     parked = 1'b1;
+        if (park_found && dut.ValidE && dut.PCE[7:2] == park_idx) parked = 1'b1;
     end
 
     // Baseline: hold every Valid bit low so no lookup can ever hit and every
@@ -86,7 +86,14 @@ module tb_cache;
         $readmemh(hexfile, prog);
         for (int i = 0; i < 64;  i++) dut.InstrMem[i] = prog[i];
         for (int i = 0; i < 32;  i++) dut.RegFile[i]  = 32'h0;
-        for (int i = 0; i < 256; i++) dut.DataMem[i]  = i;   // seeded, not zeroed
+        // Preserve the old linear-memory contents: architectural word N still
+        // contains N, with N[1:0] selecting the bank and N>>2 the bank row.
+        for (int i = 0; i < 4096; i++) begin
+            dut.DataMem0[i] = i * 4;
+            dut.DataMem1[i] = i * 4 + 1;
+            dut.DataMem2[i] = i * 4 + 2;
+            dut.DataMem3[i] = i * 4 + 3;
+        end
         for (int i = 0; i < 8; i++)
             for (int j = 0; j < 2; j++) dut.Valid[i][j] = 1'b0;
 

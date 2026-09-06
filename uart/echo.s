@@ -1,11 +1,11 @@
 # UART echo. Polls the memory mapped UART and sends every received byte back.
 #
-# Memory map, decoded in pipelined.sv from ALUResultM[10] and ALUResultM[3:2]:
-#   0x400   store   transmit the low byte of the stored word
-#   0x404   load    status: bit 0 = TxBusy, bit 1 = RxReady
-#   0x408   load    received byte; the load itself clears RxReady
+# Memory map, decoded in pipelined.sv from ALUResultM[16] and ALUResultM[3:2]:
+#   0x10000   store   transmit the low byte of the stored word
+#   0x10004   load    status: bit 0 = TxBusy, bit 1 = RxReady
+#   0x10008   load    received byte; the load itself clears RxReady
 
-addi x10, x0, 1024          # x10 = UART base = 0x400
+lui  x10, 0x10              # x10 = UART base = 0x00010000
 
 wait_rx:
 lw   x5, 4(x10)             # read status

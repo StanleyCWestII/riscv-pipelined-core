@@ -42,20 +42,26 @@ logic [1:0] ResultSrcW;
 logic RegWriteW;
 
 // Instruction Memory declarations
-logic [31:0] InstrMem [0:63]; // gives space for 64 instructions
+logic [31:0] InstrMem [0:16383]; // gives space for 16,384 instructions
 
 // Register Memory declarations
 logic [31:0] RegFile [31:0]; // declares the 32 registers
 
 // Data Memory declarations
-logic [31:0] DataMem [0:255]; // main memory consisting of 256 words
+logic [31:0] DataMem0 [0:4095]; // main memory consisting of 16 KiB
+logic [31:0] DataMem1 [0:4095]; // main memory consisting of 16 KiB
+logic [31:0] DataMem2 [0:4095]; // main memory consisting of 16 KiB
+logic [31:0] DataMem3 [0:4095]; // main memory consisting of 16 KiB
 
 // Pipelined Register declarations
 // Fetch
 logic [31:0] PCFNext; // the next instruction
+logic [31:0] PCHold;
 logic [31:0] PCF; // the program counter, holding the address of the instruction being fetched
 logic [31:0] PCPlus4F; // the address of the next instruction in sequence
+logic [31:0] PCPlus4Hold;
 logic [31:0] InstrF; // the instruction read from instruction memory
+logic RetInstr; // has an instruction returned
 
 // Decode
 logic [31:0] InstrD, PCD, PCPlus4D;
@@ -110,6 +116,7 @@ logic ReadsRS1, ReadsRS2; // tells whether the source registers were read
 logic StallBreak;
 logic StallPC;
 logic EmptyPipeline;
+logic ClearInstr;
 
 // UART Echo declarations
 logic RxReady;
@@ -124,7 +131,7 @@ logic [1:0] BranchNextState; // what the predictor entry becomes after you find 
 
 // Memory Hierarchy declarations
 logic Valid [0:7][0:1]; // says whether the slot holds an actual value. 8 sets of 2 ways
-logic [2:0] Tag [0:7][0:1]; // records which chunk of memory is parked in each slot.
+logic [8:0] Tag [0:7][0:1]; // records which chunk of memory is parked in each slot.
 // 8 sets of 2 ways
 logic [31:0] DCache [0:7][0:1][0:3]; // the actual cache data, consisting of 8 sets,
 // 2 ways each, 4 words per way. 64 words total
@@ -287,19 +294,19 @@ always_ff @(posedge Clk, posedge Reset)
         if (CacheState == Fetch && MemReady) // when the state = fetch and timer has expired
         begin
             Valid[ALUResultM[6:4]][Victim] <= 1'b1; // the current slot is set to valid
-            Tag[ALUResultM[6:4]][Victim] <= ALUResultM[9:7]; // sets the slot's tag
+            Tag[ALUResultM[6:4]][Victim] <= ALUResultM[15:7]; // sets the slot's tag
             LRU[ALUResultM[6:4]] <= Victim; // sets the slot as the most recent
 
             // stores data in all four words in the way
-            DCache[ALUResultM[6:4]][Victim][0] <= DataMem[{ALUResultM[9:4], 2'b00}];
-            DCache[ALUResultM[6:4]][Victim][1] <= DataMem[{ALUResultM[9:4], 2'b01}];
-            DCache[ALUResultM[6:4]][Victim][2] <= DataMem[{ALUResultM[9:4], 2'b10}];
-            DCache[ALUResultM[6:4]][Victim][3] <= DataMem[{ALUResultM[9:4], 2'b11}];
+            DCache[ALUResultM[6:4]][Victim][0] <= DataMem0[ALUResultM[15:4]];
+            DCache[ALUResultM[6:4]][Victim][1] <= DataMem1[ALUResultM[15:4]];
+            DCache[ALUResultM[6:4]][Victim][2] <= DataMem2[ALUResultM[15:4]];
+            DCache[ALUResultM[6:4]][Victim][3] <= DataMem3[ALUResultM[15:4]];
         end
 
         // if it's a write to memory, not a peripheral, and there was a hit, WDM
         // gets written into the DCache
-        if (MemWriteM && ~ALUResultM[10] && Hit)
+        if (MemWriteM && ~ALUResultM[16] && Hit)
         begin
             case (Funct3M)
                 3'b000: // sb
@@ -342,11 +349,23 @@ always_comb
 // Program Counter logic
 always_ff @(posedge Clk, posedge Reset)
     if (Reset) PCF <= 0; // if Reset, set PCF to 0
-    else if (~StallF) PCF <= PCFNext; // if the register is NOT stalled, proceed
+    else if (~StallF)
+    begin
+        PCHold <= PCF;
+        PCF <= PCFNext; // if the register is NOT stalled, proceed
+    end
+
+// incase a redirect happened
+always_ff @(posedge Clk, posedge Reset)
+if (Reset) ClearInstr <= 0;
+else if ((FlushD && PCSrcE == 2'b01) || (PCSrcE == 2'b10)) ClearInstr <= 1;
+else if ((ClearInstr == 1) && ~StallF) ClearInstr <= 0;
 
 assign PCPlus4F = PCF + 4; // computes the next address in sequence
+assign PCPlus4Hold = PCHold + 4;
+
 // early computes the branch address to be usable in Fetch
-assign PCTargetF = PCF + {{20{InstrF[31]}}, InstrF[7], InstrF[30:25], InstrF[11:8], 1'b0};
+assign PCTargetF = PCHold + {{20{InstrF[31]}}, InstrF[7], InstrF[30:25], InstrF[11:8], 1'b0};
 
 // mux on PCFNext
 always_comb
@@ -363,21 +382,32 @@ always_comb
 
 // Instruction Memory logic
 initial $readmemh("memory.hex", InstrMem); // reads instructions from a file and places them in InstrMem
-assign InstrF = InstrMem[PCF[7:2]]; // indexes into InstrMem with 6 bits = 64 entries
+
+always_ff @(posedge Clk, posedge Reset)
+if (Reset)
+begin
+    RetInstr <= 0;
+    InstrF <= 0;
+    end
+else if (~StallF)
+begin
+    RetInstr <= 1;
+    InstrF <= InstrMem[PCF[15:2]]; // indexes into InstrMem with 16 bits = 65k entries
+end
 
 // Branch Prediction logic
 always_comb
 begin
-	if (InstrF[6:0] == 7'b1100011) isBranchF = 1; // predicts a branch based off the opcode
+	if ((InstrF[6:0] == 7'b1100011 && ClearInstr == 0) && ~StallF) isBranchF = 1; // predicts a branch based off the opcode
 	else isBranchF = 0; // otherwise not a branch
 end
 
-assign PredictedF = ~BranchState[PCF[7:2]][1]; // indexes into the two-bit confidence value, grabbing the
+assign PredictedF = ~BranchState[PCHold[7:2]][1]; // indexes into the two-bit confidence value, grabbing the
 // starting 1 and 0. It must be inverted because in this encoding, Taken is 0 and NotTaken is 1.
 
 // Fetch --> Decode Register
 always_ff @(posedge Clk, posedge Reset)
-    if (Reset | FlushD)
+    if (Reset || FlushD || (ClearInstr && ~StallD))
     begin
         InstrD <= 0;
         PCD <= 0;
@@ -389,8 +419,8 @@ always_ff @(posedge Clk, posedge Reset)
     else if (~StallD)
     begin
         InstrD <= InstrF;
-        PCD <= PCF;
-        PCPlus4D <= PCPlus4F;
+        PCD <= PCHold;
+        PCPlus4D <= PCPlus4Hold;
         isBranchD <= isBranchF;
         PredictedD <= PredictedF;
         ValidD <= 1;
@@ -618,7 +648,7 @@ always_ff @(posedge Clk, posedge Reset)
 
 // Data Memory logic
 always_comb
-    case (ALUResultM[10]) // tells whether this is an instruction or not
+    case (ALUResultM[16]) // tells whether this is an instruction or not
         1'b1: // this IS a peripheral
         begin
             case (ALUResultM[3:2]) // picks the register
@@ -686,13 +716,13 @@ assign MemoryAccess = MemWriteM || (ResultSrcM == 2'b01);
 // To confirm a hit, we need to make sure Valid is high so that we know the slot
 // holds something real. We also need to be sure that the tag in the slot matches
 // the tag of ALUResultM
-assign Hit0 = Valid[ALUResultM[6:4]][0] && (Tag[ALUResultM[6:4]][0] == ALUResultM[9:7]);
-assign Hit1 = Valid[ALUResultM[6:4]][1] && (Tag[ALUResultM[6:4]][1] == ALUResultM[9:7]);
+assign Hit0 = Valid[ALUResultM[6:4]][0] && (Tag[ALUResultM[6:4]][0] == ALUResultM[15:7]);
+assign Hit1 = Valid[ALUResultM[6:4]][1] && (Tag[ALUResultM[6:4]][1] == ALUResultM[15:7]);
 // An actual hit is true if either way hits.
 assign Hit = Hit0 || Hit1;
 // To miss, a few things need to be confirmed. It has to be a lw or sw instruction,
 // it cannot be a hit, it cannot be a peripheral, and it's a load specifically.
-assign Miss = MemoryAccess && ~Hit && ~ALUResultM[10] && (ResultSrcM == 2'b01);
+assign Miss = MemoryAccess && ~Hit && ~ALUResultM[16] && (ResultSrcM == 2'b01);
 
 // Slow Memory logic
 always_ff @(posedge Clk, posedge Reset)
@@ -708,47 +738,112 @@ always_ff @(posedge Clk, posedge Reset)
 begin
     if (Reset) VGAReg <= 0;
     // if it's the fourth peripheral slot, it IS a peripheral, and this is a store
-    else if ((ALUResultM[3:2] == 2'b11) && (ALUResultM[10]) && (MemWriteM == 1'b1)) VGAReg <= WDM[11:0];
+    else if ((ALUResultM[3:2] == 2'b11) && (ALUResultM[16]) && (MemWriteM == 1'b1)) VGAReg <= WDM[11:0];
 end
 
 always_ff @(posedge Clk, posedge Reset)
     if (Reset) RxReady <= 0;
     else if (RxValid) RxReady <= 1;
     // if it IS a peripheral, if it's the third peripheral slot, and it's a load
-    else if (ALUResultM[10] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
+    else if (ALUResultM[16] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
 
 always_ff @(posedge Clk)
     begin
         // if it's a write to memory and not a peripheral, DataMem indexed with
         // 7 bits gets WDM
-        if (MemWriteM && ~ALUResultM[10])
+        if (MemWriteM && ~ALUResultM[16])
         begin
             case (Funct3M)
                 3'b000: // sb
                 begin
-                    case (ALUResultM[1:0])
-                    2'b00: DataMem[ALUResultM[9:2]][7:0] <= WDM[7:0];
-                    2'b01: DataMem[ALUResultM[9:2]][15:8] <= WDM[7:0];
-                    2'b10: DataMem[ALUResultM[9:2]][23:16] <= WDM[7:0];
-                    2'b11: DataMem[ALUResultM[9:2]][31:24] <= WDM[7:0];
+                    case (ALUResultM[3:2])
+                        2'b00:
+                        begin
+                            case (ALUResultM[1:0])
+                                2'b00: DataMem0[ALUResultM[15:4]][7:0] <= WDM[7:0];
+                                2'b01: DataMem0[ALUResultM[15:4]][15:8] <= WDM[7:0];
+                                2'b10: DataMem0[ALUResultM[15:4]][23:16] <= WDM[7:0];
+                                2'b11: DataMem0[ALUResultM[15:4]][31:24] <= WDM[7:0];
+                            endcase
+                        end
+                        2'b01:
+                        begin
+                            case (ALUResultM[1:0])
+                            2'b00: DataMem1[ALUResultM[15:4]][7:0] <= WDM[7:0];
+                            2'b01: DataMem1[ALUResultM[15:4]][15:8] <= WDM[7:0];
+                            2'b10: DataMem1[ALUResultM[15:4]][23:16] <= WDM[7:0];
+                            2'b11: DataMem1[ALUResultM[15:4]][31:24] <= WDM[7:0];
+                            endcase
+                        end
+                        2'b10:
+                        begin
+                            case (ALUResultM[1:0])
+                            2'b00: DataMem2[ALUResultM[15:4]][7:0] <= WDM[7:0];
+                            2'b01: DataMem2[ALUResultM[15:4]][15:8] <= WDM[7:0];
+                            2'b10: DataMem2[ALUResultM[15:4]][23:16] <= WDM[7:0];
+                            2'b11: DataMem2[ALUResultM[15:4]][31:24] <= WDM[7:0];
+                            endcase
+                        end
+                        2'b11:
+                            case (ALUResultM[1:0])
+                            2'b00: DataMem3[ALUResultM[15:4]][7:0] <= WDM[7:0];
+                            2'b01: DataMem3[ALUResultM[15:4]][15:8] <= WDM[7:0];
+                            2'b10: DataMem3[ALUResultM[15:4]][23:16] <= WDM[7:0];
+                            2'b11: DataMem3[ALUResultM[15:4]][31:24] <= WDM[7:0];
+                        endcase
                     endcase
                 end
                 3'b001: // sh
+                    case (ALUResultM[3:2])
+                        2'b00:
+                        begin
+                            case(ALUResultM[1:0])
+                            2'b00: DataMem0[ALUResultM[15:4]][15:0] <= WDM[15:0];
+                            2'b01: DataMem0[ALUResultM[15:4]][23:8] <= WDM[15:0];
+                            2'b10: DataMem0[ALUResultM[15:4]][31:16] <= WDM[15:0];
+                            endcase
+                        end
+                        2'b01:
+                        begin
+                            case(ALUResultM[1:0])
+                            2'b00: DataMem1[ALUResultM[15:4]][15:0] <= WDM[15:0];
+                            2'b01: DataMem1[ALUResultM[15:4]][23:8] <= WDM[15:0];
+                            2'b10: DataMem1[ALUResultM[15:4]][31:16] <= WDM[15:0];
+                            endcase
+                        end
+                        2'b10:
+                        begin
+                            case(ALUResultM[1:0])
+                            2'b00: DataMem2[ALUResultM[15:4]][15:0] <= WDM[15:0];
+                            2'b01: DataMem2[ALUResultM[15:4]][23:8] <= WDM[15:0];
+                            2'b10: DataMem2[ALUResultM[15:4]][31:16] <= WDM[15:0];
+                            endcase
+                        end
+                        2'b11:
+                        begin
+                            case(ALUResultM[1:0])
+                            2'b00: DataMem3[ALUResultM[15:4]][15:0] <= WDM[15:0];
+                            2'b01: DataMem3[ALUResultM[15:4]][23:8] <= WDM[15:0];
+                            2'b10: DataMem3[ALUResultM[15:4]][31:16] <= WDM[15:0];
+                            endcase
+                        end
+                    endcase
+                3'b010: // sw
                 begin
-                    case(ALUResultM[1:0])
-                    2'b00: DataMem[ALUResultM[9:2]][15:0] <= WDM[15:0];
-                    2'b01: DataMem[ALUResultM[9:2]][23:8] <= WDM[15:0];
-                    2'b10: DataMem[ALUResultM[9:2]][31:16] <= WDM[15:0];
+                    case (ALUResultM[3:2])
+                        2'b00: DataMem0[ALUResultM[15:4]] <= WDM;
+                        2'b01: DataMem1[ALUResultM[15:4]] <= WDM;
+                        2'b10: DataMem2[ALUResultM[15:4]] <= WDM;
+                        2'b11: DataMem3[ALUResultM[15:4]] <= WDM;
                     endcase
                 end
-                3'b010: DataMem[ALUResultM[9:2]] <= WDM; // sw
             endcase
         end
     end
 
 // UART Echo logic
 // if it's a write to memory, it is a peripheral, and it's the first peripheral slot
-assign TxSend = MemWriteM && ALUResultM[10] && (ALUResultM[3:2] == 2'b00);
+assign TxSend = MemWriteM && ALUResultM[16] && (ALUResultM[3:2] == 2'b00);
 // assign the uart byte to whatever is in WDM[7:0]
 assign TxByte = WDM[7:0];
 
@@ -841,7 +936,7 @@ assign StallE = MemStall || StallBreak;
 assign StallM = MemStall || StallBreak;
 assign StallW = MemStall || StallBreak;
 assign StallBreak = ((TrapCause == 2'b01 || TrapCause == 2'b10) && EmptyPipeline);
-assign FlushD = ((PCSrcE == 2'b01) && ~MemStall) || StallPC;
+assign FlushD = ((PCSrcE == 2'b01) && ~MemStall) || StallPC || ~RetInstr;
 assign FlushE = ((lwStall || (PCSrcE == 2'b01)) && ~MemStall) || StallPC;
 assign EmptyPipeline = ~ValidE && ~ValidM && ~ValidW;
 

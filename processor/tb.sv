@@ -80,8 +80,19 @@ module tb;
     always @(negedge clk)
         if (!reset && !parked) begin
             cycles_to_park++;
-            if (park_found && dut.PCE[7:2] == park_idx) parked = 1'b1;
+            if (park_found && dut.ValidE && dut.PCE[7:2] == park_idx) parked = 1'b1;
         end
+
+    // Translate the old linear word address used by the checks into the
+    // four-bank DataMem layout: low two word-address bits select the bank.
+    function automatic logic [31:0] read_data_word(input int unsigned word_addr);
+        case (word_addr[1:0])
+            2'b00: read_data_word = dut.DataMem0[word_addr >> 2];
+            2'b01: read_data_word = dut.DataMem1[word_addr >> 2];
+            2'b10: read_data_word = dut.DataMem2[word_addr >> 2];
+            2'b11: read_data_word = dut.DataMem3[word_addr >> 2];
+        endcase
+    endfunction
 
     // -------------------------------------------------------------- loading
     // Zero the architectural state the DUT never resets (RegFile and DataMem
@@ -91,7 +102,12 @@ module tb;
         for (int i = 0; i < 64; i++) prog[i] = 32'h0000_0000;
         $readmemh(hexfile, prog);
         for (int i = 0; i < 64; i++) dut.InstrMem[i] = prog[i];
-        for (int i = 0; i < 64; i++) dut.DataMem[i]  = 32'h0000_0000;
+        for (int i = 0; i < 4096; i++) begin
+            dut.DataMem0[i] = 32'h0000_0000;
+            dut.DataMem1[i] = 32'h0000_0000;
+            dut.DataMem2[i] = 32'h0000_0000;
+            dut.DataMem3[i] = 32'h0000_0000;
+        end
         for (int i = 0; i < 32; i++) dut.RegFile[i]  = 32'h0000_0000;
 
         // Locate the parking spin loop: a B-type whose branch immediate is 0,
@@ -151,14 +167,16 @@ module tb;
 
     task automatic check_mem(input int unsigned word_addr,
                              input logic [31:0] expect_v);
-        if (dut.DataMem[word_addr] === expect_v) begin
+        logic [31:0] got;
+        got = read_data_word(word_addr);
+        if (got === expect_v) begin
             pass_test++; pass_total++;
         end
         else begin
             fail_test++; fail_total++;
             $display("  FAIL  %-14s DataMem[%0d] (byte 0x%0h)  expected %08h  got %08h",
                      current, word_addr, word_addr*4,
-                     expect_v, dut.DataMem[word_addr]);
+                     expect_v, got);
         end
     endtask
 

@@ -4,7 +4,7 @@
 
 ## 1. Overview
 
-riscv-pipelined-core is a 5-stage pipelined RV32I subset core that implements thirteen instructions, a UART Echo, a VGA Pattern Generator, 2-bit branch prediction, and a D-cache memory hierarchy. It is written in SystemVerilog and runs on a Nexys A7 FPGA. 
+riscv-pipelined-core is a 5-stage pipelined RV32I core that implements a UART Echo, a VGA Pattern Generator, 2-bit branch prediction, and a D-cache memory hierarchy. It is written in SystemVerilog and runs on a Nexys A7 FPGA. 
 
 | Claim | Number |
 |---|---|
@@ -96,13 +96,15 @@ The Hazard Unit makes use of forwarding, flushing, and stalling to bypass typica
 
 | Class | Instructions |
 |---|---|
-| R-type | add, sub, and, or, slt |
-| I-type ALU | addi, andi, ori, slti |
-| Memory | lw, sw |
-| Branch | beq |
-| Jump | jal |
-
-Missing from the current instruction set: xor, sll, srl, sra, sltu, xori, slli, srli, srai, sltiu, lb, lh, lbu, lhu, sb, sh, bne, blt, bge, bltu, bgeu, jalr, lui, auipc, ecall, ebreak, fence.
+| R-type | add, sub, xor, or, sll, srl, sra, slt, sltu |
+| I-type ALU| addi, xori, ori, andi, slli, srli, srai, slti, sltiu |
+| I-type Memory | lb, lh, lw, lbu, lhu, fence |
+| S-type | sb, sh, sw |
+| B-type | beq, bne, blt, bge, bltu, bgeu |
+| J-type | jal |
+| I-type jump | jalr |
+| U-type | lui, auipc |
+| I-type environment call | ecall, ebreak |
 
 ### 3c. Peripherals
 
