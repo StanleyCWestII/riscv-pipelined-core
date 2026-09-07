@@ -86,6 +86,7 @@ logic [31:0] Target; // used to compute destination for jalr
 logic [4:0] A3E;
 logic SubtractE, N1E, N2E, oVerflowE, SltResultE; // used to compute signed comparison path for slt
 logic ValidE;
+
 // Memory
 logic [31:0] PCPlus4M, ALUResultM;
 logic [31:0] WDM;
@@ -96,6 +97,7 @@ logic [31:0] UByteM; // for lbu
 logic [31:0] LHalfM; // for lh
 logic [31:0] UHalfM; // for lhu
 logic ValidM;
+
 // Writeback
 logic [31:0] ALUResultW, PCPlus4W, RDW;
 logic [31:0] WD3W; // the data being written back
@@ -107,8 +109,7 @@ logic ValidW;
 // HAZARD Unit declarations
 logic [31:0] RD2EI;
 logic [4:0] A1E, A2E;
-logic [1:0] ForwardAE, ForwardBE; // picks where each ALU input comes from. either
-// the register file normally, or a result grabbed early out of Memory or Writeback
+logic [1:0] ForwardAE, ForwardBE; // picks where each ALU input comes from. either the register file normally, or a result grabbed early out of Memory or Writeback
 logic StallF, StallD, StallE, StallM, StallW; // freeze the labeled stage
 logic FlushD, FlushE; // Resets the stage to 0
 logic lwStall; // pauses the pipeline for one cycle
@@ -147,8 +148,7 @@ logic [2:0] ReturnAdrTop;
 
 // DCache declarations
 logic DValid [0:7][0:1]; // says whether the slot holds an actual value. 8 sets of 2 ways
-logic [6:0] DTag [0:7][0:1]; // records which chunk of memory is parked in each slot.
-// 8 sets of 2 ways
+logic [6:0] DTag [0:7][0:1]; // records which chunk of memory is parked in each slot. 8 sets of 2 ways
 logic [31:0] DCache [0:7][0:1][0:15]; // 8 sets, 2 ways, one line of 16 words
 logic LRU [0:7]; // one bit per set. tells which of the two ways was used last
 logic DCacheState, DCacheNextState; // two state machines. sitting DIdle or fetching from slow mem
