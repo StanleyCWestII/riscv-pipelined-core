@@ -66,7 +66,7 @@ module tb;
     logic       park_found;
 
     always @(negedge clk)
-        if (!reset && dut.BranchE && !dut.MemStall) begin
+        if (!reset && dut.BranchE && !dut.DMemStall && !dut.IMemStall) begin
             br_at[dut.PCE[7:2]]++;
             if (dut.MisPredict) mp_at[dut.PCE[7:2]]++;
         end
@@ -222,8 +222,8 @@ module tb;
         mispred_total += mispred_test;
 
         if (branch_test == 0)
-            $display("  %-16s %2d/%2d %s", current, pass_test,
-                     pass_test + fail_test, verdict);
+            $display("  %-16s %2d/%2d %-9s                                cycles %3d",
+                     current, pass_test, pass_test + fail_test, verdict, cycles_to_park);
         else begin
             $display("  %-16s %2d/%2d %-9s branches %3d   mispredicts %3d   cycles %3d",
                      current, pass_test, pass_test + fail_test, verdict,
@@ -489,6 +489,23 @@ module tb;
         check_reg(2, 32'h0000_0008); // fence advances; consumer after it executes
         report();
 
+        // -------------------------------------------- T21: call/return pairs
+        run_program("T21 call/ret", "processor/tests/t21_call.hex", 120);
+        check_reg(6, 32'd11);     // after call 1 returned to 0x08
+        check_reg(7, 32'd21);     // after call 2 returned to 0x10
+        check_reg(8, 32'd131);    // nested: outer -> add10 -> back through x2
+        check_reg(9, 32'd9);      // every ret landed on the right caller
+        check_reg(2, 32'd24);     // outer saved x1 = 0x18
+        report();
+
+        // -------------------------------------------- T22: return-stack mispredict
+        run_program("T22 fake ret", "processor/tests/t22_fakeret.hex", 120);
+        check_reg(5, 32'd11);     // both jalr executions landed on the real x1
+        check_reg(6, 32'd0);      // fall-through after the jalr never ran
+        check_reg(7, 32'd0);
+        check_reg(8, 32'd0);
+        report();
+
         // ------------------------------------------------------- summary
         $display("");
         $display("=== %0d/%0d checks passed ===",
@@ -496,9 +513,9 @@ module tb;
         if (fail_total == 0) $display("=== ALL TESTS PASSED ===");
         else                 $display("=== %0d FAILURES ===", fail_total);
         $display("");
-        $display("=== branch predictor: 2-bit saturating counters, 64 entries ===");
-        $display("=== %0d branches, %0d mispredicts, %0d wasted cycles ===",
-                 branch_total, mispred_total, 2 * mispred_total);
+        $display("=== branch predictor: 2-bit counters + BTB + return stack, 64 entries ===");
+        $display("=== %0d branches, %0d mispredicts, %0d wasted cycles (3 per mispredict) ===",
+                 branch_total, mispred_total, 3 * mispred_total);
         $display("=== (parking spin loops excluded from all counts) ===");
         $display("");
         $finish;

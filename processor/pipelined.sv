@@ -129,21 +129,46 @@ logic [31:0] PCTargetF; // branch destination computed early
 logic [1:0] BranchState [0:63]; // the actual predictor. 64 entries with 2 bits each
 logic [1:0] BranchNextState; // what the predictor entry becomes after you find out if the branch went
 
-// Memory Hierarchy declarations
-logic Valid [0:7][0:1]; // says whether the slot holds an actual value. 8 sets of 2 ways
-logic [8:0] Tag [0:7][0:1]; // records which chunk of memory is parked in each slot.
+// Branch Target Buffer declarations
+logic ValidBuffer [0:63];
+logic [7:0] TagBuffer [0:63];
+logic [31:0] TargetBuffer [0:63];
+logic isJumpBuffer [0:63];
+logic isReturnBuffer [0:63];
+logic HitBuffer;
+logic isBranchHold, PredictedHold, HitBufferHold, FallBackTaken;
+
+// Return Address Stack
+logic [31:0] ReturnAdr [0:7];
+logic [2:0] ReturnAdrPtr;
+logic isReturnE;
+logic [31:0] PredictedAdrF, PredictedAdrD, PredictedAdrE, PredictedAdrHold;
+logic [2:0] ReturnAdrTop;
+
+// DCache declarations
+logic DValid [0:7][0:1]; // says whether the slot holds an actual value. 8 sets of 2 ways
+logic [6:0] DTag [0:7][0:1]; // records which chunk of memory is parked in each slot.
 // 8 sets of 2 ways
-logic [31:0] DCache [0:7][0:1][0:3]; // the actual cache data, consisting of 8 sets,
-// 2 ways each, 4 words per way. 64 words total
+logic [31:0] DCache [0:7][0:1][0:15]; // 8 sets, 2 ways, one line of 16 words
 logic LRU [0:7]; // one bit per set. tells which of the two ways was used last
-logic CacheState, CacheNextState; // two state machines. sitting idle or fetching from slow mem
-logic Hit0, Hit1; // tells whether way 0 matched or way 1 matched
-logic Hit, Miss; // miss is if either hit0 or hit1 matched. miss is neither
+logic DCacheState, DCacheNextState; // two state machines. sitting DIdle or fetching from slow mem
+logic DHit0, DHit1; // tells whether way 0 matched or way 1 matched
+logic DHit, DMiss; // DMiss is if either DHit0 or DHit1 matched. DMiss is neither
 logic Victim; // the way about to get evicted
 logic MemoryAccess; // tells whether the instruction is a load or store
-logic MemReady; // fires when MemCount hits 0
-logic MemStall; // freezes the pipeline while a miss is being serviced
-logic [4:0] MemCount; // counts down the 15 cycle penalty
+logic DMemReady; // fires when DMemCount hits 0
+logic DMemStall; // freezes the pipeline while a DMiss is being serviced
+logic [4:0] DMemCount; // counts down the 15 cycle penalty
+logic [1:0] Beat;
+
+// ICache declarations
+logic [31:0] ICache [0:7][0:7]; // 8 sets, 1 way, 8 words
+logic IValid [0:7]; // 8 sets of 1 way
+logic [7:0] ITag [0:7]; // 8 sets of 1 way
+logic IHit, IMiss;
+logic ICacheState, ICacheNextState;
+logic IMemReady, IMemStall;
+logic [4:0] IMemCount;
 
 // Control Unit logic
 assign OpD = InstrD[6:0]; // assigns Op to the first seven bits of Instr
@@ -223,8 +248,9 @@ assign MisPredict = BranchTaken ^ PredictedE;
 // Determines where the PC goes next. A few things happen here
 always_comb
 begin
-	if ((BranchE && MisPredict) | JumpE) PCSrcE = 2'b01; // signals that a mistake was made
+	if ((BranchE && MisPredict) || (JumpE && ~PredictedE) || (JumpE && PredictedE && isReturnE && (PredictedAdrE != PCTargetE))) PCSrcE = 2'b01; // signals that a mistake was made
 	else if (isBranchF && PredictedF) PCSrcE = 2'b10; // makes a guess and branches off
+	else if (FallBackTaken) PCSrcE = 2'b11; // for an initial BTB DMiss
 	else PCSrcE = 2'b00; // normal operation
 end
 
@@ -250,6 +276,47 @@ always_ff @(posedge Clk, posedge Reset)
     // a branch is in Execute. PCE[7:2] is the index. The bottom two bits are alwayys
     // 00, so they're dropped. 6 bits gives 64 entries.
 
+// Branch Target Buffer
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset)
+        begin
+            for (int i = 0; i < 64; ++i)
+            begin
+                TargetBuffer[i] <= 0;
+                ValidBuffer[i] <= 0;
+                TagBuffer[i] <= 0;
+                isJumpBuffer[i] <= 0;
+            end
+        end
+    else if ((BranchE && BranchTaken) || (JumpE && (OpE != 7'b1100111 || isReturnE)))
+    begin
+        ValidBuffer[PCE[7:2]] <= 1'b1;
+        TagBuffer[PCE[7:2]] <= PCE[15:8];
+        TargetBuffer[PCE[7:2]] <= PCTargetE;
+        isJumpBuffer[PCE[7:2]] <= JumpE;
+        isReturnBuffer[PCE[7:2]] <= isReturnE;
+    end
+
+// Return Address Stack
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset)
+    begin
+        ReturnAdrPtr <= 0;
+        for (int i = 0; i < 8; ++i)
+        begin
+            ReturnAdr[i] <= 0;
+        end
+    end
+    else if (JumpE && (A3E == 5'b00001) && ~StallE)
+    begin
+        ReturnAdr[ReturnAdrPtr] <= PCPlus4E;
+        ReturnAdrPtr <= ReturnAdrPtr + 1;
+    end
+    else if (~StallF && (PCSrcE == 2'b10) && isReturnBuffer[PCF[7:2]])
+    begin
+        ReturnAdrPtr <= ReturnAdrPtr - 1;
+    end
+
 // the state machine. basically, if the branch is taken, you walk left towards WeaklyTaken
 // and StronglyTaken. if the branch isn't taken, you walk right towards WeaklyNotTaken and
 // StronglyNotTaken
@@ -263,86 +330,137 @@ always_comb
         endcase
     end
 
-// Memory Hierarchy FSM
-localparam Idle = 1'b0; // the cache is answering normally
-localparam Fetch = 1'b1; // something missed, we're waiting on slow memory
+// DCache FSM
+localparam DIdle = 1'b0; // the cache is answering normally
+localparam DFetch = 1'b1; // something DMissed, we're waiting on slow memory
 
-assign MemReady = (MemCount == 0); // fires when the countdown from 15 hits 0
-assign Victim = ~LRU[ALUResultM[6:4]]; // finds the least recently used by indexing into
+assign DMemReady = (DMemCount == 0); // fires when the countdown from 15 hits 0
+assign Victim = ~LRU[ALUResultM[8:6]]; // finds the least recently used by indexing into
 // LRU using 3 bits of ALUResult (giving 8 entries), then inverting
 
 always_ff @(posedge Clk, posedge Reset)
-    if (Reset) // if Reset, walks Valid and sets everything to 0
+    if (Reset) // if Reset, walks DValid and sets everything to 0
         begin
-            CacheState <= Idle;
+            DCacheState <= DIdle;
+            Beat <= 0;
             for (int i = 0; i < 8; ++i)
                 begin
                     LRU[i] <= 0;
                     for (int j = 0; j < 2; ++j)
                     begin
-                        Valid[i][j] <= 0;
+                        DValid[i][j] <= 0;
                     end
                 end
         end
     else
     begin
-        CacheState <= CacheNextState; // state register ticks
+        DCacheState <= DCacheNextState; // state register ticks
 
-        if (MemoryAccess && Hit0) LRU[ALUResultM[6:4]] <= 0; // sets to 0 if way 0 hits
-        if (MemoryAccess && Hit1) LRU[ALUResultM[6:4]] <= 1; // sets to 1 if way 1 hits
+        if (MemoryAccess && DHit0) LRU[ALUResultM[8:6]] <= 0; // sets to 0 if way 0 hits
+        if (MemoryAccess && DHit1) LRU[ALUResultM[8:6]] <= 1; // sets to 1 if way 1 hits
 
-        if (CacheState == Fetch && MemReady) // when the state = fetch and timer has expired
+        if (DCacheState == DFetch && DMemReady) // when the state = DFetch and timer has expired
         begin
-            Valid[ALUResultM[6:4]][Victim] <= 1'b1; // the current slot is set to valid
-            Tag[ALUResultM[6:4]][Victim] <= ALUResultM[15:7]; // sets the slot's tag
-            LRU[ALUResultM[6:4]] <= Victim; // sets the slot as the most recent
+            if (Beat == 2'b11)
+            begin
+                DValid[ALUResultM[8:6]][Victim] <= 1'b1; // the current slot is set to DValid
+                DTag[ALUResultM[8:6]][Victim] <= ALUResultM[15:9]; // sets the slot's DTag
+                LRU[ALUResultM[8:6]] <= Victim; // sets the slot as the most recent
+            end
 
-            // stores data in all four words in the way
-            DCache[ALUResultM[6:4]][Victim][0] <= DataMem0[ALUResultM[15:4]];
-            DCache[ALUResultM[6:4]][Victim][1] <= DataMem1[ALUResultM[15:4]];
-            DCache[ALUResultM[6:4]][Victim][2] <= DataMem2[ALUResultM[15:4]];
-            DCache[ALUResultM[6:4]][Victim][3] <= DataMem3[ALUResultM[15:4]];
+            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b00}] <= DataMem0[{ALUResultM[15:6], Beat}];
+            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b01}] <= DataMem1[{ALUResultM[15:6], Beat}];
+            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b10}] <= DataMem2[{ALUResultM[15:6], Beat}];
+            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b11}] <= DataMem3[{ALUResultM[15:6], Beat}];
+
+            Beat <= Beat + 2'd1;
         end
 
         // if it's a write to memory, not a peripheral, and there was a hit, WDM
         // gets written into the DCache
-        if (MemWriteM && ~ALUResultM[16] && Hit)
+        if (MemWriteM && ~ALUResultM[16] && DHit)
         begin
             case (Funct3M)
                 3'b000: // sb
                 begin
                     case (ALUResultM[1:0])
-                    2'b00: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][7:0] <= WDM[7:0];
-                    2'b01: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][15:8] <= WDM[7:0];
-                    2'b10: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][23:16] <= WDM[7:0];
-                    2'b11: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][31:24] <= WDM[7:0];
+                    2'b00: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][7:0] <= WDM[7:0];
+                    2'b01: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][15:8] <= WDM[7:0];
+                    2'b10: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][23:16] <= WDM[7:0];
+                    2'b11: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][31:24] <= WDM[7:0];
                     endcase
                 end
                 3'b001: // sh
                 begin
                     case(ALUResultM[1:0])
-                    2'b00: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][15:0] <= WDM[15:0];
-                    2'b01: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][23:8] <= WDM[15:0];
-                    2'b10: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]][31:16] <= WDM[15:0];
+                    2'b00: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][15:0] <= WDM[15:0];
+                    2'b01: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][23:8] <= WDM[15:0];
+                    2'b10: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][31:16] <= WDM[15:0];
                     endcase
                 end
-                3'b010: DCache[ALUResultM[6:4]][Hit0 ? 1'b0 : 1'b1][ALUResultM[3:2]] <= WDM; // sw
+                3'b010: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]] <= WDM; // sw
             endcase
         end
     end
 
 always_comb
-    case (CacheState)
-        Idle:
+    case (DCacheState)
+        DIdle:
         begin
-            MemStall = Miss; // stalls in the SAME cycle to prevent a delay
-            CacheNextState = Miss ? Fetch : Idle; // if miss, go to fetch. otherwise stay in idle
+            DMemStall = DMiss; // stalls in the SAME cycle to prevent a delay
+            DCacheNextState = DMiss ? DFetch : DIdle; // if DMiss, go to DFetch. otherwise stay in DIdle
         end
-        Fetch:
+        DFetch:
         begin
-            MemStall = 1; // stalls the entire time while in fetch
-            if (MemReady) CacheNextState = Idle; // once memory is ready, go to idlle
-            else CacheNextState = Fetch; // otherwise stay in fetch
+            DMemStall = 1; // stalls the entire time while in DFetch
+            if (DMemReady && Beat == 2'b11) DCacheNextState = DIdle; // once memory is ready, go to idlle
+            else DCacheNextState = DFetch; // otherwise stay in DFetch
+        end
+    endcase
+
+// ICache FSM
+localparam IIdle = 1'b0;
+localparam IFetch = 1'b1;
+
+assign IMemReady = (IMemCount == 0);
+
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset)
+    begin
+        ICacheState <= IIdle;
+        for (int i = 0; i < 8; ++i)
+        begin
+            IValid[i] <= 0;
+        end
+    end
+    else
+    begin
+        ICacheState <= ICacheNextState;
+
+        if (ICacheState == IFetch)
+        begin
+            IValid[PCF[7:5]] <= 1'b1;
+            ITag[PCF[7:5]] <= PCF[15:8];
+
+            for (int i = 0; i < 8; ++i)
+            begin
+                ICache[PCF[7:5]][i] <= InstrMem[{PCF[15:5], i[2:0]}];
+            end
+        end
+    end
+
+always_comb
+    case (ICacheState)
+        IIdle:
+        begin
+            IMemStall = IMiss;
+            ICacheNextState = IMiss ? IFetch : IIdle;
+        end
+        IFetch:
+        begin
+            IMemStall = 1'b1;
+            if (IMemReady) ICacheNextState = IIdle;
+            else ICacheNextState = IFetch;
         end
     endcase
 
@@ -358,27 +476,35 @@ always_ff @(posedge Clk, posedge Reset)
 // incase a redirect happened
 always_ff @(posedge Clk, posedge Reset)
 if (Reset) ClearInstr <= 0;
-else if ((FlushD && PCSrcE == 2'b01) || (PCSrcE == 2'b10)) ClearInstr <= 1;
+    else if ((FlushD && (PCSrcE == 2'b01)) || PCSrcE == 2'b11) ClearInstr <= 1;
 else if ((ClearInstr == 1) && ~StallF) ClearInstr <= 0;
 
 assign PCPlus4F = PCF + 4; // computes the next address in sequence
 assign PCPlus4Hold = PCHold + 4;
 
-// early computes the branch address to be usable in Fetch
-assign PCTargetF = PCHold + {{20{InstrF[31]}}, InstrF[7], InstrF[30:25], InstrF[11:8], 1'b0};
+assign ReturnAdrTop = ReturnAdrPtr - 3'd1;
+assign PredictedAdrF = ReturnAdr[ReturnAdrTop];
 
+// START OF FETCH
 // mux on PCFNext
 always_comb
     case (PCSrcE)
         2'b00: PCFNext = PCPlus4F; // standard sequential address, just +4
         2'b01: // a mistake was made or jal
         begin
-            if (isBranchE == 1'b1 && BranchTaken == 1'b0) PCFNext = PCPlus4E; // redirects the PC to the actual branch address
+            if (BranchE && ~BranchTaken) PCFNext = PCPlus4E; // redirects the PC to the actual branch address
             else PCFNext = PCTargetE; // otherwise redirect to jal jump address
         end
-        2'b10: PCFNext = PCTargetF; // if a branch is predicted, go to the early branch address
+        2'b10:
+        begin
+            if (isReturnBuffer[PCF[7:2]]) PCFNext = ReturnAdr[ReturnAdrTop];
+            else PCFNext = TargetBuffer[PCF[7:2]]; // if a branch is predicted, go to the early branch address
+        end
+        2'b11: PCFNext = PCTargetF;
         default: PCFNext = PCPlus4F;
     endcase
+
+assign FallBackTaken = (InstrF[6:0] == 7'b1100011) && ~HitBufferHold && (InstrF[31] == 1'b1) && ~ClearInstr && ~StallF;
 
 // Instruction Memory logic
 initial $readmemh("memory.hex", InstrMem); // reads instructions from a file and places them in InstrMem
@@ -392,18 +518,41 @@ begin
 else if (~StallF)
 begin
     RetInstr <= 1;
-    InstrF <= InstrMem[PCF[15:2]]; // indexes into InstrMem with 16 bits = 65k entries
+    InstrF <= ICache[PCF[7:5]][PCF[4:2]];
 end
 
 // Branch Prediction logic
 always_comb
 begin
-	if ((InstrF[6:0] == 7'b1100011 && ClearInstr == 0) && ~StallF) isBranchF = 1; // predicts a branch based off the opcode
+	if (HitBuffer && ~StallF) isBranchF = 1; // predicts a branch based off the opcode
 	else isBranchF = 0; // otherwise not a branch
 end
 
-assign PredictedF = ~BranchState[PCHold[7:2]][1]; // indexes into the two-bit confidence value, grabbing the
+// prematurely computes the branch destination
+assign PCTargetF = PCHold + {{20{InstrF[31]}}, InstrF[7], InstrF[30:25], InstrF[11:8], 1'b0};
+
+assign HitBuffer = (ValidBuffer[PCF[7:2]] && (TagBuffer[PCF[7:2]] == PCF[15:8]));
+assign PredictedF = HitBuffer && (isJumpBuffer[PCF[7:2]] || ~BranchState[PCF[7:2]][1]); // indexes into the two-bit confidence value, grabbing the
 // starting 1 and 0. It must be inverted because in this encoding, Taken is 0 and NotTaken is 1.
+
+always_ff @(posedge Clk)
+if (Reset)
+begin
+    PredictedHold <= 0;
+    isBranchHold <= 0;
+    HitBufferHold <= 0;
+end
+else if (~StallF)
+begin
+    PredictedHold <= PredictedF;
+    isBranchHold <= isBranchF;
+    HitBufferHold <= HitBuffer;
+    PredictedAdrHold <= PredictedAdrF;
+end
+
+// ICache Hit/Miss logic
+assign IHit = IValid[PCF[7:5]] && (ITag[PCF[7:5]] == PCF[15:8]);
+assign IMiss = ~IHit && (ICacheState == IIdle);
 
 // Fetch --> Decode Register
 always_ff @(posedge Clk, posedge Reset)
@@ -415,15 +564,17 @@ always_ff @(posedge Clk, posedge Reset)
         isBranchD <= 0;
         PredictedD <= 0;
         ValidD <= 0;
+        PredictedAdrD <= 0;
     end
     else if (~StallD)
     begin
         InstrD <= InstrF;
         PCD <= PCHold;
         PCPlus4D <= PCPlus4Hold;
-        isBranchD <= isBranchF;
-        PredictedD <= PredictedF;
+        isBranchD <= isBranchHold || FallBackTaken;
+        PredictedD <= PredictedHold || FallBackTaken;
         ValidD <= 1;
+        PredictedAdrD <= PredictedAdrHold;
     end
 
 // Register Memory logic
@@ -508,6 +659,7 @@ always_ff @(posedge Clk, posedge Reset)
         Funct3E <= 0;
         OpE <= 0;
         ValidE <= 0;
+        PredictedAdrE <= 0;
     end
     else if (~StallE)
     begin
@@ -531,11 +683,12 @@ always_ff @(posedge Clk, posedge Reset)
         Funct3E <= Funct3D;
         OpE <= OpD;
         ValidE <= ValidD;
+        PredictedAdrE <= PredictedAdrD;
     end
 
 // computes the branch destination, PC plus offset
-
 assign Target = SrcAE + SrcBE;
+assign isReturnE = (OpE == 7'b1100111) && (A1E == 5'b00001) && (A3E == 5'b00000);
 
 always_comb
     case (OpE)
@@ -662,10 +815,10 @@ always_comb
         1'b0: // this is NOT a peripheral
         begin
             // did way 0 hit, and if not use way 1. if neither hit, way 1's contents
-            // are handed back, which is garbage. A miss raises MemStall anyway, making
+            // are handed back, which is garbage. A miss raises DMemStall anyway, making
             // sure nothing latches onto the garbage
-            RDM = Hit0 ? DCache[ALUResultM[6:4]][0][ALUResultM[3:2]]
-            : DCache[ALUResultM[6:4]][1][ALUResultM[3:2]];
+            RDM = DHit0 ? DCache[ALUResultM[8:6]][0][ALUResultM[5:2]]
+            : DCache[ALUResultM[8:6]][1][ALUResultM[5:2]];
 
             // uses the bottom bits of ALUResult to decide which byte out of RDM to load
             case (ALUResultM[1:0])
@@ -714,24 +867,29 @@ always_comb
 assign MemoryAccess = MemWriteM || (ResultSrcM == 2'b01);
 
 // To confirm a hit, we need to make sure Valid is high so that we know the slot
-// holds something real. We also need to be sure that the tag in the slot matches
-// the tag of ALUResultM
-assign Hit0 = Valid[ALUResultM[6:4]][0] && (Tag[ALUResultM[6:4]][0] == ALUResultM[15:7]);
-assign Hit1 = Valid[ALUResultM[6:4]][1] && (Tag[ALUResultM[6:4]][1] == ALUResultM[15:7]);
+// holds something real. We also need to be sure that the DTag in the slot matches
+// the DTag of ALUResultM
+assign DHit0 = DValid[ALUResultM[8:6]][0] && (DTag[ALUResultM[8:6]][0] == ALUResultM[15:9]);
+assign DHit1 = DValid[ALUResultM[8:6]][1] && (DTag[ALUResultM[8:6]][1] == ALUResultM[15:9]);
 // An actual hit is true if either way hits.
-assign Hit = Hit0 || Hit1;
+assign DHit = DHit0 || DHit1;
 // To miss, a few things need to be confirmed. It has to be a lw or sw instruction,
 // it cannot be a hit, it cannot be a peripheral, and it's a load specifically.
-assign Miss = MemoryAccess && ~Hit && ~ALUResultM[16] && (ResultSrcM == 2'b01);
+assign DMiss = MemoryAccess && ~DHit && ~ALUResultM[16] && (ResultSrcM == 2'b01);
 
 // Slow Memory logic
 always_ff @(posedge Clk, posedge Reset)
-    if (Reset) MemCount <= 0;
-    // Purely to test the D-cache. We create a 15-cycle latency by firing MemReady
-    // every time MemCount == 0, and we initially set MemCount to 0 and count down
+    if (Reset) DMemCount <= 0;
+    // Purely to test the D-cache. We create a 15-cycle latency by firing DMemReady
+    // every time DMemCount == 0, and we initially set DMemCount to 0 and count down
     // by 1 every Clk cycle.
-    else if (CacheState == Idle && Miss) MemCount <= 15;
-    else if (CacheState == Fetch) MemCount <= MemCount - 1;
+    else if (DCacheState == DIdle && DMiss) DMemCount <= 15;
+    else if (DCacheState == DFetch && DMemCount != 0) DMemCount <= DMemCount - 1;
+
+always_ff @(posedge Clk, posedge Reset)
+    if (Reset) IMemCount <= 0;
+    else if (ICacheState == IIdle && IMiss) IMemCount <= 15;
+    else if (ICacheState == IFetch) IMemCount <= IMemCount - 1;
 
 // VGA logic
 always_ff @(posedge Clk, posedge Reset)
@@ -881,7 +1039,6 @@ always_ff @(posedge Clk, posedge Reset)
     end
 
 // End Mux logic
-//
 always_comb
     case (ResultSrcW)
         2'b00: WD3W = ALUResultW; // writes ALUResult back
@@ -930,14 +1087,14 @@ end
 
 // stall and flush logic
 assign lwStall = ResultSrcE[0] & ((ReadsRS1 && (A1D == A3E)) || (ReadsRS2 & (A2D == A3E)));
-assign StallF = lwStall || MemStall || StallPC || StallBreak || ~(TrapCause == 2'b00);
-assign StallD = lwStall || MemStall || StallBreak || ~(TrapCause == 2'b00);
-assign StallE = MemStall || StallBreak;
-assign StallM = MemStall || StallBreak;
-assign StallW = MemStall || StallBreak;
+assign StallF = lwStall || DMemStall || StallPC || StallBreak || ~(TrapCause == 2'b00) || IMemStall;
+assign StallD = lwStall || DMemStall || StallBreak || ~(TrapCause == 2'b00) || IMemStall;
+assign StallE = DMemStall || StallBreak || IMemStall;
+assign StallM = DMemStall || StallBreak || IMemStall;
+assign StallW = DMemStall || StallBreak || IMemStall;
 assign StallBreak = ((TrapCause == 2'b01 || TrapCause == 2'b10) && EmptyPipeline);
-assign FlushD = ((PCSrcE == 2'b01) && ~MemStall) || StallPC || ~RetInstr;
-assign FlushE = ((lwStall || (PCSrcE == 2'b01)) && ~MemStall) || StallPC;
+assign FlushD = ((PCSrcE == 2'b01) && ~DMemStall && ~IMemStall) || StallPC || ~RetInstr;
+assign FlushE = ((lwStall || (PCSrcE == 2'b01)) && ~DMemStall && ~IMemStall) || StallPC;
 assign EmptyPipeline = ~ValidE && ~ValidM && ~ValidW;
 
 endmodule

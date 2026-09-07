@@ -53,17 +53,17 @@ module tb_cache;
     // undo the fill. One cycle late is the only safe window.
     logic acc_done_d;
     always @(posedge clk)
-        acc_done_d <= nocache_mode && dut.MemoryAccess && !dut.MemStall;
+        acc_done_d <= nocache_mode && dut.MemoryAccess && !dut.DMemStall;
     always @(negedge clk)
         if (acc_done_d)
             for (int i = 0; i < 8; i++)
-                for (int j = 0; j < 2; j++) dut.Valid[i][j] = 1'b0;
+                for (int j = 0; j < 2; j++) dut.DValid[i][j] = 1'b0;
 
     always @(negedge clk) if (!reset && !parked) begin
         cycles++;
-        if (dut.MemoryAccess && !dut.MemStall)          accesses++;
-        if (dut.CacheState == 1'b0 && dut.Miss)         misses++;
-        if (dut.MemStall)                               stalls++;
+        if (dut.MemoryAccess && !dut.DMemStall)          accesses++;
+        if (dut.DCacheState == 1'b0 && dut.DMiss)         misses++;
+        if (dut.DMemStall)                               stalls++;
         if (park_found && dut.ValidE && dut.PCE[7:2] == park_idx) parked = 1'b1;
     end
 
@@ -95,7 +95,7 @@ module tb_cache;
             dut.DataMem3[i] = i * 4 + 3;
         end
         for (int i = 0; i < 8; i++)
-            for (int j = 0; j < 2; j++) dut.Valid[i][j] = 1'b0;
+            for (int j = 0; j < 2; j++) dut.DValid[i][j] = 1'b0;
 
         park_found = 1'b0;
         for (int i = 0; i < 64; i++)
@@ -123,7 +123,7 @@ module tb_cache;
 
     initial begin
         $display("");
-        $display("=== D-cache: 8 sets x 2 ways x 4 words (64 words), 2-way set assoc,");
+        $display("=== D-cache: 8 sets x 2 ways x 16 words (256 words, 1 KiB), 2-way set assoc,");
         $display("===          write-through, 15-cycle main memory ===");
         $display("");
         $display("  %-18s %6s %7s %7s %9s %8s %9s %8s",
@@ -131,10 +131,10 @@ module tb_cache;
                  "stall cy", "AMAT", "cycles");
         $display("  %s", {80{"-"}});
 
-        bn[0]="B1 stream";       bh[0]="processor/bench/b1_stream.hex";       bb[0]=3000;
-        bn[1]="B2 reuse fits";   bh[1]="processor/bench/b2_reuse_fits.hex";   bb[1]=3000;
-        bn[2]="B3 reuse thrash"; bh[2]="processor/bench/b3_reuse_thrash.hex"; bb[2]=12000;
-        bn[3]="B4 conflict";     bh[3]="processor/bench/b4_conflict.hex";     bb[3]=3000;
+        bn[0]="B1 stream";       bh[0]="processor/bench/b1_stream.hex";       bb[0]=6000;
+        bn[1]="B2 reuse fits";   bh[1]="processor/bench/b2_reuse_fits.hex";   bb[1]=6000;
+        bn[2]="B3 reuse thrash"; bh[2]="processor/bench/b3_reuse_thrash.hex"; bb[2]=60000;
+        bn[3]="B4 conflict";     bh[3]="processor/bench/b4_conflict.hex";     bb[3]=6000;
 
         for (bi = 0; bi < 4; bi++) run_bench(bn[bi], bh[bi], bb[bi], 1'b0);
 
