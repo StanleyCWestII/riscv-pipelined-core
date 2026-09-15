@@ -162,7 +162,7 @@ logic DMemStall; // freezes the pipeline while a DMiss is being serviced
 logic [4:0] DMemCount; // counts down the 15 cycle penalty
 logic [2:0] BeatHold, Beat;
 logic [1:0] HitWay;
-logic [31:0] Scalar0, Scalar1, Scalar2, Scalar3;
+logic [31:0] Scalar0, Scalar1, Scalar2, Scalar3, StoreWord;
 
 // ICache declarations
 logic [31:0] ICache [0:7][0:7]; // 8 sets, 1 way, 8 words
@@ -437,38 +437,39 @@ always_ff @(posedge Clk)
         // gets written into the DCache
         if (MemWriteM && ~ALUResultM[16] && DHit)
         begin
-            DDirty[ALUResultM[8:6]][HitWay] <= 1'b0; // automatic load
-
-            case (Funct3M)
-                3'b000: // sb
-                begin
-                    DDirty[ALUResultM[8:6]][HitWay] <= 1'b1; // if it's a store
-
-                    case (ALUResultM[1:0])
-                    2'b00: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][7:0] <= WDM[7:0];
-                    2'b01: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][15:8] <= WDM[7:0];
-                    2'b10: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][23:16] <= WDM[7:0];
-                    2'b11: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][31:24] <= WDM[7:0];
-                    endcase
-                end
-                3'b001: // sh
-                begin
-                    DDirty[ALUResultM[8:6]][HitWay] <= 1'b1; // if it's a store
-
-                    case(ALUResultM[1:0])
-                    2'b00: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][15:0] <= WDM[15:0];
-                    2'b01: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][23:8] <= WDM[15:0];
-                    2'b10: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][31:16] <= WDM[15:0];
-                    endcase
-                end
-                3'b010:
-                begin
-                    DDirty[ALUResultM[8:6]][HitWay] <= 1'b1; // if it's a store
-                    DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]] <= WDM; // sw
-                end
-            endcase
+            DDirty[ALUResultM[8:6]][HitWay] <= MemWriteM; // load hit: clean, store hit: dirty
+            DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]] <= StoreWord;
         end
     end
+
+// store logic
+always_comb
+begin
+    StoreWord = DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]];
+    case(Funct3M)
+        3'b000: // sb
+        begin
+            case (ALUResultM[1:0])
+            2'b00: StoreWord[7:0] <= WDM[7:0];
+            2'b01: StoreWord[15:8] <= WDM[7:0];
+            2'b10: StoreWord[23:16] <= WDM[7:0];
+            2'b11: StoreWord[31:24] <= WDM[7:0];
+            endcase
+        end
+        3'b001: // sh
+        begin
+            case(ALUResultM[1:0])
+            2'b00: StoreWord[15:0] <= WDM[15:0];
+            2'b01: StoreWord[23:8] <= WDM[15:0];
+            2'b10: StoreWord[31:16] <= WDM[15:0];
+            endcase
+        end
+        3'b010:
+        begin
+            StoreWord = WDM;
+        end
+    endcase
+end
 
 // exists here because on-board RAM does not accept asynchronous resets
 always_ff @(posedge Clk)
