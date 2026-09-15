@@ -37,15 +37,15 @@ module tb_cache;
     logic [31:0] prog [0:63];
     logic [5:0]  park_idx;
     logic        park_found, parked;
-    int          accesses, misses, stalls, cycles;
+    int          accesses, misses, stalls, cycles, memwrites;
     string       current;
     int          bi;
     bit          nocache_mode;
-    int          base_cy [0:3], cach_cy [0:3];
-    real         base_am [0:3], cach_am [0:3];
-    string       bn [0:3];
-    string       bh [0:3];
-    int          bb [0:3];
+    int          base_cy [0:4], cach_cy [0:4];
+    real         base_am [0:4], cach_am [0:4];
+    string       bn [0:4];
+    string       bh [0:4];
+    int          bb [0:4];
 
     // Invalidate one full cycle AFTER an access completes. Clearing during the
     // completing cycle would drop Hit mid-cycle, re-raise Miss and MemStall,
@@ -57,13 +57,17 @@ module tb_cache;
     always @(negedge clk)
         if (acc_done_d)
             for (int i = 0; i < 8; i++)
-                for (int j = 0; j < 2; j++) dut.DValid[i][j] = 1'b0;
+                for (int j = 0; j < 4; j++) dut.DValid[i][j] = 1'b0;
 
+    // memwrites = stores that reach DataMem. Under write-through that is every
+    // completed store. When the cache goes write-back this hook has to move to
+    // the dirty-eviction write, because stores will stop touching DataMem.
     always @(negedge clk) if (!reset && !parked) begin
         cycles++;
         if (dut.MemoryAccess && !dut.DMemStall)          accesses++;
         if (dut.DCacheState == 1'b0 && dut.DMiss)         misses++;
         if (dut.DMemStall)                               stalls++;
+        if (dut.MemWriteM && !dut.ALUResultM[16] && !dut.DMemStall) memwrites++;
         if (park_found && dut.ValidE && dut.PCE[7:2] == park_idx) parked = 1'b1;
     end
 
@@ -76,7 +80,7 @@ module tb_cache;
         real hitrate, amat;
         current = name;
         nocache_mode = nocache;
-        accesses = 0; misses = 0; stalls = 0; cycles = 0; parked = 0;
+        accesses = 0; misses = 0; stalls = 0; cycles = 0; memwrites = 0; parked = 0;
 
         reset = 1'b0;
         #1 reset = 1'b1;
@@ -95,7 +99,7 @@ module tb_cache;
             dut.DataMem3[i] = i * 4 + 3;
         end
         for (int i = 0; i < 8; i++)
-            for (int j = 0; j < 2; j++) dut.DValid[i][j] = 1'b0;
+            for (int j = 0; j < 4; j++) dut.DValid[i][j] = 1'b0;
 
         park_found = 1'b0;
         for (int i = 0; i < 64; i++)
@@ -113,9 +117,9 @@ module tb_cache;
         else begin
             hitrate = 100.0 * real'(accesses - misses) / real'(accesses);
             amat    = real'(accesses + stalls) / real'(accesses);
-            $display("  %-18s %6d %7d %7d %8.1f%% %8d %9.2f %8d",
+            $display("  %-18s %6d %7d %7d %8.1f%% %8d %9.2f %8d %7d",
                      name, accesses, accesses - misses, misses,
-                     hitrate, stalls, amat, cycles);
+                     hitrate, stalls, amat, cycles, memwrites);
             if (nocache) begin base_cy[bi] = cycles; base_am[bi] = amat; end
             else         begin cach_cy[bi] = cycles; cach_am[bi] = amat; end
         end
@@ -123,29 +127,30 @@ module tb_cache;
 
     initial begin
         $display("");
-        $display("=== D-cache: 8 sets x 2 ways x 16 words (256 words, 1 KiB), 2-way set assoc,");
-        $display("===          write-through, 15-cycle main memory ===");
+        $display("=== D-cache: 8 sets x 4 ways x 16 words (512 words, 2 KiB), 4-way set assoc, tree PLRU,");
+        $display("===          write-through, write-allocate, 15-cycle main memory ===");
         $display("");
-        $display("  %-18s %6s %7s %7s %9s %8s %9s %8s",
+        $display("  %-18s %6s %7s %7s %9s %8s %9s %8s %7s",
                  "benchmark", "acc", "hits", "misses", "hit rate",
-                 "stall cy", "AMAT", "cycles");
-        $display("  %s", {80{"-"}});
+                 "stall cy", "AMAT", "cycles", "mem wr");
+        $display("  %s", {88{"-"}});
 
         bn[0]="B1 stream";       bh[0]="processor/bench/b1_stream.hex";       bb[0]=6000;
         bn[1]="B2 reuse fits";   bh[1]="processor/bench/b2_reuse_fits.hex";   bb[1]=6000;
         bn[2]="B3 reuse thrash"; bh[2]="processor/bench/b3_reuse_thrash.hex"; bb[2]=60000;
         bn[3]="B4 conflict";     bh[3]="processor/bench/b4_conflict.hex";     bb[3]=6000;
+        bn[4]="B5 store stream"; bh[4]="processor/bench/b5_store.hex";        bb[4]=6000;
 
-        for (bi = 0; bi < 4; bi++) run_bench(bn[bi], bh[bi], bb[bi], 1'b0);
+        for (bi = 0; bi < 5; bi++) run_bench(bn[bi], bh[bi], bb[bi], 1'b0);
 
         $display("");
         $display("=== same programs, 15-cycle memory, NO cache (every access misses) ===");
         $display("");
-        $display("  %-18s %6s %7s %7s %9s %8s %9s %8s",
+        $display("  %-18s %6s %7s %7s %9s %8s %9s %8s %7s",
                  "benchmark", "acc", "hits", "misses", "hit rate",
-                 "stall cy", "AMAT", "cycles");
-        $display("  %s", {80{"-"}});
-        for (bi = 0; bi < 4; bi++) run_bench(bn[bi], bh[bi], bb[bi]*6, 1'b1);
+                 "stall cy", "AMAT", "cycles", "mem wr");
+        $display("  %s", {88{"-"}});
+        for (bi = 0; bi < 5; bi++) run_bench(bn[bi], bh[bi], bb[bi]*6, 1'b1);
 
         $display("");
         $display("=== what the cache bought ===");
@@ -153,7 +158,7 @@ module tb_cache;
         $display("  %-18s %12s %12s %10s %10s",
                  "benchmark", "cycles w/o", "cycles w/", "speedup", "AMAT");
         $display("  %s", {70{"-"}});
-        for (bi = 0; bi < 4; bi++)
+        for (bi = 0; bi < 5; bi++)
             $display("  %-18s %12d %12d %9.2fx  %5.2f -> %.2f",
                      bn[bi], base_cy[bi], cach_cy[bi],
                      real'(base_cy[bi]) / real'(cach_cy[bi]),

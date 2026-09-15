@@ -147,19 +147,20 @@ logic [31:0] PredictedAdrF, PredictedAdrD, PredictedAdrE, PredictedAdrHold;
 logic [2:0] ReturnAdrTop;
 
 // DCache declarations
-logic DValid [0:7][0:1]; // says whether the slot holds an actual value. 8 sets of 2 ways
-logic [6:0] DTag [0:7][0:1]; // records which chunk of memory is parked in each slot. 8 sets of 2 ways
-logic [31:0] DCache [0:7][0:1][0:15]; // 8 sets, 2 ways, one line of 16 words
-logic LRU [0:7]; // one bit per set. tells which of the two ways was used last
+logic DValid [0:7][0:3]; // says whether the slot holds an actual value. 8 sets of 4 ways
+logic DDirty [0:7][0:3]; // says whether the cache line has been modified
+logic [6:0] DTag [0:7][0:3]; // records which chunk of memory is parked in each slot. 8 sets of 4 ways
+logic [31:0] DCache [0:7][0:3][0:15]; // 8 sets, 4 ways, one line of 16 words
+logic [2:0] LRU [0:7]; // three bits per set. tells which of the four ways was used last
 logic DCacheState, DCacheNextState; // two state machines. sitting DIdle or fetching from slow mem
-logic DHit0, DHit1; // tells whether way 0 matched or way 1 matched
-logic DHit, DMiss; // DMiss is if either DHit0 or DHit1 matched. DMiss is neither
-logic Victim; // the way about to get evicted
+logic DHit0, DHit1, DHit2, DHit3; // tells which way matched
+logic DHit, DMiss; // DMiss is if any DHit matched. DMiss is neither
+logic [1:0] Victim; // the way about to get evicted
 logic MemoryAccess; // tells whether the instruction is a load or store
 logic DMemReady; // fires when DMemCount hits 0
 logic DMemStall; // freezes the pipeline while a DMiss is being serviced
 logic [4:0] DMemCount; // counts down the 15 cycle penalty
-logic [1:0] Beat;
+logic [1:0] Beat, HitWay;
 
 // ICache declarations
 logic [31:0] ICache [0:7][0:7]; // 8 sets, 1 way, 8 words
@@ -335,8 +336,17 @@ localparam DIdle = 1'b0; // the cache is answering normally
 localparam DFetch = 1'b1; // something DMissed, we're waiting on slow memory
 
 assign DMemReady = (DMemCount == 0); // fires when the countdown from 15 hits 0
-assign Victim = ~LRU[ALUResultM[8:6]]; // finds the least recently used by indexing into
-// LRU using 3 bits of ALUResult (giving 8 entries), then inverting
+
+// Victim logic
+always_comb
+    if (~LRU[ALUResultM[8:6]][2] == 0)
+    begin
+        Victim = {~LRU[ALUResultM[8:6]][2], ~LRU[ALUResultM[8:6]][1]};
+    end
+    else
+    begin
+        Victim = {~LRU[ALUResultM[8:6]][2], ~LRU[ALUResultM[8:6]][0]};
+    end
 
 always_ff @(posedge Clk, posedge Reset)
     if (Reset) // if Reset, walks DValid and sets everything to 0
@@ -346,9 +356,10 @@ always_ff @(posedge Clk, posedge Reset)
             for (int i = 0; i < 8; ++i)
                 begin
                     LRU[i] <= 0;
-                    for (int j = 0; j < 2; ++j)
+                    for (int j = 0; j < 4; ++j)
                     begin
                         DValid[i][j] <= 0;
+                        DDirty[i][j] <= 0;
                     end
                 end
         end
@@ -356,8 +367,26 @@ always_ff @(posedge Clk, posedge Reset)
     begin
         DCacheState <= DCacheNextState; // state register ticks
 
-        if (MemoryAccess && DHit0) LRU[ALUResultM[8:6]] <= 0; // sets to 0 if way 0 hits
-        if (MemoryAccess && DHit1) LRU[ALUResultM[8:6]] <= 1; // sets to 1 if way 1 hits
+        if (MemoryAccess && DHit0)
+        begin
+            LRU[ALUResultM[8:6]][2] <= 1'b0;
+            LRU[ALUResultM[8:6]][1] <= 1'b0;
+        end
+        if (MemoryAccess && DHit1)
+        begin
+            LRU[ALUResultM[8:6]][2] <= 1'b0;
+            LRU[ALUResultM[8:6]][1] <= 1'b1;
+        end
+        if (MemoryAccess && DHit2)
+        begin
+            LRU[ALUResultM[8:6]][2] <= 1'b1;
+            LRU[ALUResultM[8:6]][0] <= 1'b0;
+        end
+        if (MemoryAccess && DHit3)
+        begin
+            LRU[ALUResultM[8:6]][2] <= 1'b1;
+            LRU[ALUResultM[8:6]][0] <= 1'b1;
+        end
 
         if (DCacheState == DFetch && DMemReady) // when the state = DFetch and timer has expired
         begin
@@ -365,7 +394,26 @@ always_ff @(posedge Clk, posedge Reset)
             begin
                 DValid[ALUResultM[8:6]][Victim] <= 1'b1; // the current slot is set to DValid
                 DTag[ALUResultM[8:6]][Victim] <= ALUResultM[15:9]; // sets the slot's DTag
-                LRU[ALUResultM[8:6]] <= Victim; // sets the slot as the most recent
+                DDirty[ALUResultM[8:6]][Victim] <= 1'b0; // resets dirty after all writes are finished
+
+                if (~Victim[1])
+                begin
+                    LRU[ALUResultM[8:6]][2] <= Victim[1];
+                    LRU[ALUResultM[8:6]][1] <= Victim[0];
+                end
+                else
+                begin
+                    LRU[ALUResultM[8:6]][2] <= Victim[1];
+                    LRU[ALUResultM[8:6]][0] <= Victim[0];
+                end
+            end
+
+            if (DDirty[ALUResultM[8:6]][Victim] == 1'b1) // IF something is about to rewrite the cache
+            begin
+                DataMem0[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b00}];
+                DataMem1[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b01}];
+                DataMem2[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b10}];
+                DataMem3[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b11}];
             end
 
             DCache[ALUResultM[8:6]][Victim][{Beat, 2'b00}] <= DataMem0[{ALUResultM[15:6], Beat}];
@@ -380,25 +428,35 @@ always_ff @(posedge Clk, posedge Reset)
         // gets written into the DCache
         if (MemWriteM && ~ALUResultM[16] && DHit)
         begin
+            DDirty[ALUResultM[8:6]][HitWay] <= 1'b0; // automatic load
+
             case (Funct3M)
                 3'b000: // sb
                 begin
+                    DDirty[ALUResultM[8:6]][HitWay] <= 1'b1; // if it's a store
+
                     case (ALUResultM[1:0])
-                    2'b00: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][7:0] <= WDM[7:0];
-                    2'b01: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][15:8] <= WDM[7:0];
-                    2'b10: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][23:16] <= WDM[7:0];
-                    2'b11: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][31:24] <= WDM[7:0];
+                    2'b00: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][7:0] <= WDM[7:0];
+                    2'b01: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][15:8] <= WDM[7:0];
+                    2'b10: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][23:16] <= WDM[7:0];
+                    2'b11: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][31:24] <= WDM[7:0];
                     endcase
                 end
                 3'b001: // sh
                 begin
+                    DDirty[ALUResultM[8:6]][HitWay] <= 1'b1; // if it's a store
+
                     case(ALUResultM[1:0])
-                    2'b00: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][15:0] <= WDM[15:0];
-                    2'b01: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][23:8] <= WDM[15:0];
-                    2'b10: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]][31:16] <= WDM[15:0];
+                    2'b00: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][15:0] <= WDM[15:0];
+                    2'b01: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][23:8] <= WDM[15:0];
+                    2'b10: DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]][31:16] <= WDM[15:0];
                     endcase
                 end
-                3'b010: DCache[ALUResultM[8:6]][DHit0 ? 1'b0 : 1'b1][ALUResultM[5:2]] <= WDM; // sw
+                3'b010:
+                begin
+                    DDirty[ALUResultM[8:6]][HitWay] <= 1'b1; // if it's a store
+                    DCache[ALUResultM[8:6]][HitWay][ALUResultM[5:2]] <= WDM; // sw
+                end
             endcase
         end
     end
@@ -467,16 +525,17 @@ always_comb
 // Program Counter logic
 always_ff @(posedge Clk, posedge Reset)
     if (Reset) PCF <= 0; // if Reset, set PCF to 0
-    else if (~StallF)
+    else if (~StallF) // if the register is NOT stalled, proceed
     begin
         PCHold <= PCF;
-        PCF <= PCFNext; // if the register is NOT stalled, proceed
+        PCF <= PCFNext;
     end
 
+// FLAG for README
 // incase a redirect happened
 always_ff @(posedge Clk, posedge Reset)
 if (Reset) ClearInstr <= 0;
-    else if ((FlushD && (PCSrcE == 2'b01)) || PCSrcE == 2'b11) ClearInstr <= 1;
+else if ((FlushD && (PCSrcE == 2'b01)) || PCSrcE == 2'b11) ClearInstr <= 1;
 else if ((ClearInstr == 1) && ~StallF) ClearInstr <= 0;
 
 assign PCPlus4F = PCF + 4; // computes the next address in sequence
@@ -485,7 +544,6 @@ assign PCPlus4Hold = PCHold + 4;
 assign ReturnAdrTop = ReturnAdrPtr - 3'd1;
 assign PredictedAdrF = ReturnAdr[ReturnAdrTop];
 
-// START OF FETCH
 // mux on PCFNext
 always_comb
     case (PCSrcE)
@@ -805,7 +863,7 @@ always_comb
         1'b1: // this IS a peripheral
         begin
             case (ALUResultM[3:2]) // picks the register
-            2'b00: RDM = 0; // 0 because 0x400 is the transmit register
+            2'b00: RDM = 0; // 0 because 0x10000 is the transmit register
             2'b01: RDM = {30'b0, RxReady, TxBusy}; // packages RxReady and TxBusy
             2'b10: RDM = {24'b0, RxData}; // same idea, packages the byte
             2'b11: RDM = {20'b0, VGAReg}; // for the VGA Pattern Generator
@@ -817,8 +875,11 @@ always_comb
             // did way 0 hit, and if not use way 1. if neither hit, way 1's contents
             // are handed back, which is garbage. A miss raises DMemStall anyway, making
             // sure nothing latches onto the garbage
-            RDM = DHit0 ? DCache[ALUResultM[8:6]][0][ALUResultM[5:2]]
-            : DCache[ALUResultM[8:6]][1][ALUResultM[5:2]];
+            if (DHit0) RDM = DCache[ALUResultM[8:6]][0][ALUResultM[5:2]];
+            else if (DHit1) RDM = DCache[ALUResultM[8:6]][1][ALUResultM[5:2]];
+            else if (DHit2) RDM = DCache[ALUResultM[8:6]][2][ALUResultM[5:2]];
+            else if (DHit3) RDM = DCache[ALUResultM[8:6]][3][ALUResultM[5:2]];
+            else RDM = 0;
 
             // uses the bottom bits of ALUResult to decide which byte out of RDM to load
             case (ALUResultM[1:0])
@@ -869,13 +930,22 @@ assign MemoryAccess = MemWriteM || (ResultSrcM == 2'b01);
 // To confirm a hit, we need to make sure Valid is high so that we know the slot
 // holds something real. We also need to be sure that the DTag in the slot matches
 // the DTag of ALUResultM
+always_comb
+    if (DHit0) HitWay = 2'b00;
+    else if (DHit1) HitWay = 2'b01;
+    else if (DHit2) HitWay = 2'b10;
+    else if (DHit3) HitWay = 2'b11;
+    else HitWay = 2'b00;
+
 assign DHit0 = DValid[ALUResultM[8:6]][0] && (DTag[ALUResultM[8:6]][0] == ALUResultM[15:9]);
 assign DHit1 = DValid[ALUResultM[8:6]][1] && (DTag[ALUResultM[8:6]][1] == ALUResultM[15:9]);
+assign DHit2 = DValid[ALUResultM[8:6]][2] && (DTag[ALUResultM[8:6]][2] == ALUResultM[15:9]);
+assign DHit3 = DValid[ALUResultM[8:6]][3] && (DTag[ALUResultM[8:6]][3] == ALUResultM[15:9]);
 // An actual hit is true if either way hits.
-assign DHit = DHit0 || DHit1;
+assign DHit = DHit0 || DHit1 || DHit2 || DHit3;
 // To miss, a few things need to be confirmed. It has to be a lw or sw instruction,
 // it cannot be a hit, it cannot be a peripheral, and it's a load specifically.
-assign DMiss = MemoryAccess && ~DHit && ~ALUResultM[16] && (ResultSrcM == 2'b01);
+assign DMiss = MemoryAccess && ~DHit && ~ALUResultM[16];
 
 // Slow Memory logic
 always_ff @(posedge Clk, posedge Reset)
@@ -909,7 +979,7 @@ always_ff @(posedge Clk)
     begin
         // if it's a write to memory and not a peripheral, DataMem indexed with
         // 7 bits gets WDM
-        if (MemWriteM && ~ALUResultM[16])
+        if (MemWriteM && ~ALUResultM[16] && ~DHit)
         begin
             case (Funct3M)
                 3'b000: // sb

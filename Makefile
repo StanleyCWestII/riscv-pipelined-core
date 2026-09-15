@@ -38,6 +38,15 @@ C_EXPECT  ?= 10
 all: sim
 	./sim
 
+.PHONY: writeback
+writeback:
+	iverilog -g2012 -s tb_writeback -o sim_writeback processor/tb_writeback.sv processor/pipelined.sv
+	vvp sim_writeback
+
+.PHONY: branch
+branch: $(HEX)
+	python3 processor/bench/measure_branch.py
+
 sim: $(SRCS) $(HEX)
 	iverilog -g2012 -o sim $(SRCS)
 
@@ -50,6 +59,10 @@ processor/tests/%.hex: processor/tests/%.s asm.py
 # checks here; tb.sv owns those.
 BENCH_ASM := $(wildcard processor/bench/*.s)
 BENCH_HEX := $(BENCH_ASM:.s=.hex)
+
+.PHONY: associativity
+associativity: $(HEX) $(BENCH_HEX)
+	python3 processor/bench/measure_associativity.py
 
 cache: processor/tb_cache.sv processor/pipelined.sv $(BENCH_HEX)
 	iverilog -g2012 -o sim_cache processor/tb_cache.sv processor/pipelined.sv
@@ -117,5 +130,6 @@ isa:
 	python3 isa_tests/run_isa.py
 
 clean:
+	rm -f sim_writeback
 	rm -rf isa_tests/build
 	rm -f sim sim_vga sim_top sim_cache sim_icache sim_wave sim_c wave.vcd $(HEX) $(BENCH_HEX) vga/vgatest.hex $(C_ELF) $(C_HEX) $(C_DATA_BIN) $(C_DATA_HEX) $(C_DATA_STAMP)

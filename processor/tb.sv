@@ -92,6 +92,12 @@ module tb;
             2'b10: read_data_word = dut.DataMem2[word_addr >> 2];
             2'b11: read_data_word = dut.DataMem3[word_addr >> 2];
         endcase
+        // Architectural memory includes a resident write-back cache line.
+        // Physical DataMem write-back is checked separately by tb_writeback.sv.
+        for (int way = 0; way < 4; way++)
+            if (dut.DValid[word_addr[6:4]][way] === 1'b1 &&
+                dut.DTag[word_addr[6:4]][way] === word_addr[13:7])
+                read_data_word = dut.DCache[word_addr[6:4]][way][word_addr[3:0]];
     endfunction
 
     // -------------------------------------------------------------- loading
@@ -174,7 +180,7 @@ module tb;
         end
         else begin
             fail_test++; fail_total++;
-            $display("  FAIL  %-14s DataMem[%0d] (byte 0x%0h)  expected %08h  got %08h",
+            $display("  FAIL  %-14s architectural memory[%0d] (byte 0x%0h)  expected %08h  got %08h",
                      current, word_addr, word_addr*4,
                      expect_v, got);
         end
