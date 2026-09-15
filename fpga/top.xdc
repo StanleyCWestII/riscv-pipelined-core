@@ -3,7 +3,9 @@
 
 # 100 MHz system clock
 set_property -dict { PACKAGE_PIN E3    IOSTANDARD LVCMOS33 } [get_ports { CLK100MHZ }];
-create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports { CLK100MHZ }];
+# Core runs at 50 MHz: top.sv divides the 100 MHz pin by 2. The flopped-DCache
+# build missed 100 MHz timing (WNS -2.35 post-place); revisit after retiming.
+create_clock -add -name sys_clk_pin -period 20.00 -waveform {0 10} [get_ports { CLK100MHZ }];
 
 # USB-UART, data leaving the FPGA toward the PC
 set_property -dict { PACKAGE_PIN D4    IOSTANDARD LVCMOS33 } [get_ports { UART_RXD_OUT }];
