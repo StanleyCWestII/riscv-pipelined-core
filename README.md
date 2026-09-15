@@ -85,7 +85,7 @@ After assembling the hex file, open Vivado and run the following in its Tcl Cons
 source {/full/path/to/riscv-pipelined-core/fpga/build.tcl}
 ```
 
-The echo demo needs no external hardware. Channel B of the FT2232H is a USB serial bridge wired to UART_TXD_IN and UART_RXD_OUT. Any 115200 8N1 terminal will do.
+The echo demo needs no external hardware. Channel B of the FT2232H is a USB serial bridge wired to UART_TXD_IN and UART_RXD_OUT. Use a **57600** 8N1 terminal: the cached-core build runs at 50 MHz (section 5f), so the UART's fixed 868-tick counters produce half the original 115200 baud.
 
 ---
 
@@ -227,7 +227,7 @@ A miss replaces the line already occupying the selected set. There is no replace
 
 #### D-Cache
 
-The D-cache consists of 8 sets, 4 ways, and 16 words per line. It is 512 words in total, write-back, and write-allocate. Its companion signals are `DValid`, which is 1 bit, 8 sets, and 4 ways. It says whether a line holds usable data. `DTag` is 7 bits, 8 sets, and 4 ways. It identifies which part of data memory the line came from. `DDirty` is 1 bit, 8 sets, and 4 ways. It determines whether a cache line has been modified by a store. `LRU` is 3 bits and 8 sets. It is used for the cache replacement policy, and approximates the replacement order. `Victim` is 2 bits and holds the way which is soon to be evicted. `MemoryAccess` determines whether an instruction is a load or store. `Beat` is 2 bit and selects which four words get transferred during a cache fill. `HitWay` identifies which of the four ways match the requested address. The D-cache also has its own `DHit` signal, which fires if any of the way-specific hit signals, `DHit0`, `DHit1`, `DHit2`, or `DHit3` return true. `DMiss` fires on a load or store when there is no cache hit and the instruction is not a peripheral. Like the I-cache, the D-cache has its own slow memory declarations.
+The D-cache consists of 8 sets, 4 ways, and 16 words per line. It is 512 words in total, write-back, and write-allocate. Its companion signals are `DValid`, which is 1 bit, 8 sets, and 4 ways. It says whether a line holds usable data. `DTag` is 7 bits, 8 sets, and 4 ways. It identifies which part of data memory the line came from. `DDirty` is 1 bit, 8 sets, and 4 ways. It determines whether a cache line has been modified by a store. `LRU` is 3 bits and 8 sets. It is used for the cache replacement policy, and approximates the replacement order. `Victim` is 2 bits and holds the way which is soon to be evicted. `MemoryAccess` determines whether an instruction is a load or store. `Beat` is 3 bits and steps 0 through 4 during a fill: four capture cycles plus a final flush cycle, described below. `HitWay` identifies which of the four ways match the requested address. The D-cache also has its own `DHit` signal, which fires if any of the way-specific hit signals, `DHit0`, `DHit1`, `DHit2`, or `DHit3` return true. `DMiss` fires on a load or store when there is no cache hit and the instruction is not a peripheral. Like the I-cache, the D-cache has its own slow memory declarations.
 
 For the D-cache, `ALUResultM` supplies the address: 
 
@@ -251,6 +251,8 @@ When the instruction is a store, targets ordinary memory, and hits:
 - `Funct3M` selects byte, halfword, or full-word storage.
 - The line's `DDirty` bit becomes one.
 
+Stores never write byte slices into the array. A combinational `StoreWord` starts as the old word and has the target bytes replaced per `Funct3M` and `ALUResultM[1:0]`, so the array receives exactly one whole-word write. This is what keeps the flop-based `DCache` from exploding into per-bit mux trees (Defect 3).
+
 Main memory is not updated. The new values sit in D-cache for now. Main memory is only updated on a miss, which goes as follows:
 
 First, `DMiss` asserts for a load or store with no matching line. While in DIdle, that immediately asserts `DMemStall`. The cache enters DFetch and loads `DMemCount` with 15. The stall holds the entire pipeline, and once the countdown is finished, `DMemReady` is asserted.
@@ -263,24 +265,18 @@ From here, `Victim` selects the way to replace using tree-based pseudo-LRU, an a
 
 Replacement chooses the opposite pair, then the opposite way within that pair. Hits update those bits. Completing a fill marks the filled way as recently used.
 
-Write-back requires writing soon-to-be replaced data back to data memory. Once `DMemReady` is asserted, `Beat` steps through four transfers, each transfer reading one word from each of the four data memory banks into the cache If the victim is dirty, that same clock also writes its four old words back to main memory. The write-back address uses the victim's stored tag. The incoming read uses the requested address. Write-back and refill are performed together, four words per clock.
+Write-back requires writing soon-to-be replaced data back to data memory. Once `DMemReady` is asserted, `Beat` steps through four transfers, each reading one word from each of the four data memory banks. The read lands in four scalar registers first and is written into `DCache` one clock later, because a synchronous BRAM read whose destination is another array will not infer (Defect 3). If the victim is dirty, the same clocks write its four old words back to main memory, one quad per beat. The write-back address uses the victim's stored tag. The incoming read uses the requested address. The delayed flush never collides with the write-back: at any beat the refill is writing quad k-1 while the write-back reads quad k. The fill therefore takes five ready cycles: four captures and a fifth where the last quad lands, the line goes valid, and `Beat`/`BeatHold` re-arm to zero.
 
-A store miss also writes `WDM` directly into the selected data memory bank:
+A store miss holds `MemWriteM` high for the whole refill, since the M register is frozen by the stall. Once the line installs, that held store retires through the normal store-hit path and marks the line dirty. The held `MemWriteM` is effectively a pending-store register, so no direct write to main memory is needed on a miss. This is what makes the cache write-allocate with no write-through path at all: the only writer `DataMem` ever has is eviction.
 
-- `ALUResultM[3:2]` selects the bank.
-- `ALUResultM[15:4]` selects its row.
-- The store size determines which bytes change.
+On the final cycle of the fill, the cache:
 
-Meanwhile, the miss logic fills the requested cache line. Once the line is installed, the held store becomes a hit and updates the cache through the normal store-hit logic, making it dirty. This is why the cache is write-allocate with a direct memory write on misses, rather than write-through.
-
-On the final transfer, the cache:
-
+- Writes the last quad from the scalar registers.
 - Sets the filled line's valid bit.
 - Stores the new tag.
 - Clears its dirty bit.
 - Updates replacement information.
-- Returns to DIdle.
-- Beat wraps back to zero.
+- Returns to DIdle, re-arming `Beat` and `BeatHold` to zero at that edge.
 
 ### 3d. Peripherals
 
@@ -467,6 +463,24 @@ After these corrections, samples now land at 1301, 2169, and 3037 cycles from `B
 
 Another oversight by me. While the processor, cache, branch predictor, and vga all had testbenches, the uart lacked one.
 
+#### Defect 3: The Cached Core Could Not Be Built At First
+
+The first synthesis of the cached core failed three separate ways, each caught by reading the tool's diagnostics rather than by any test. All three are port-shape problems: simulation proves what RTL does, synthesis proves what it can physically be.
+
+**Three write ports on `DataMem`.** A leftover from the pre-cache design wrote stores directly into the data banks on a miss. Combined with the eviction write-back and the refill read, `DataMem` exposed more ports than any 7-series memory has (`Synth 8-2913`, then `8-3391`: too large to dissolve into flip-flops). The block turned out to be dead weight: with a write-back cache the only writer memory needs is eviction, and the held-`MemWriteM` exit-cycle store hit already covered every miss. Deleting it was proven safe by regression, not by argument.
+
+**Asynchronous reset in the sensitivity list.** With the writes consolidated, inference still failed with `8-4767`: "RAM is sensitive to asynchronous reset signal." BRAM has no pin that clears contents asynchronously, and any array assigned in an `always_ff @(posedge Clk, posedge Reset)` block is treated as reset-tainted even when the reset branch never touches it. The fix was converting the D-cache control block to a synchronous reset, safe here because reset is a pushbutton held for millions of cycles.
+
+**Read into an array blocks BRAM.** Even with both fixes, `ram_style = "block"` was rejected as infeasible. A standalone bisect (three minimal RAM shapes, one variable each) isolated the cause: a synchronous read whose destination is another array, `DCache[...] <= DataMem0[...]`, will not infer as BRAM, while the same read into a scalar register maps cleanly. The fill was retimed to capture each quad in scalar registers and write it into the cache one clock later, giving the five-cycle fill described in section 3c.
+
+**`DCache` stays in flops.** The cache itself needs two write ports (refill, store hit) and two asynchronous read ports (load path, eviction), a 2W2R no primitive provides, so it builds as 16384 flip-flops. Written naively, with byte-slice store cases, the per-bit mux trees cost 65K LUTs and did not fit the part. Merging stores into a whole-word `StoreWord` first collapsed that to 24.7K LUTs. The structural end state is a BRAM cache with sequenced write-back, at the cost of one cycle of load latency.
+
+#### Defect 4: The Retimed Fill Lost Its Last Quad
+
+The scalar-capture retime initially let the FSM exit at `Beat == 3`, one cycle before the final quad's delayed write, so the line went valid with words 12-15 undefined. The 176-check regression passed anyway: none of its tests read the last quad of a freshly filled line. A five-instruction probe (one miss, then loads of all four words of the final quad) caught it, and the fix was the five-state `Beat` counter with the exit moved to `Beat == 4`.
+
+Two lessons. A green regression is a statement about coverage, not correctness. And an unreset `BeatHold` was the same class of bug one step behind: it worked only because an X-indexed array write is dropped in simulation.
+
 ---
 
 ## 5. Results 
@@ -580,6 +594,9 @@ Same RTL in every row. The only variable is the program in `memory.hex` and the 
 | Echo, Performance_ExplorePostRoutePhysOpt | `echo` | 10.00ns | -0.154ns | 24 / 11142 |
 | Echo, Default Strategy | `echo` | 10.50ns | +0.137ns | 0 / 11144 |
 | Echo, Repo `build.tcl` As Committed | `echo` | 10.00ns | -0.242ns | 52 / 11142 |
+| Cached core, 50 MHz bring-up | `echo` | 20.00ns | **+16.355ns** | 0 |
+
+The rows above the cached build are the pre-cache core. The cached core at 100 MHz missed timing in an aborted run (-2.35ns post-place estimate), so the shipped build divides the board clock by two and closes with wide margin. Getting the cached core back to 100 MHz is open work; the suspects are the `RDM` async read mux over the flopped `DCache`, the `StoreWord` read-modify-write path, and the original ALU/forwarding path above.
 
 The core is marginal at 100MHz on this part. Whether it closes depends on what is in the instruction ROM.
 
@@ -736,7 +753,7 @@ A load at 0x10008 or a load at 0x1000C from the VGA register has a side effect o
 
 ### 6c. Utilization Table
 
-Post-implementation, echo build, xc7a100tcsg324-1:
+Pre-cache build, post-implementation, echo build, xc7a100tcsg324-1:
 
 | Resource | Used | Available | % |
 |---|---|---|---|
@@ -747,6 +764,16 @@ Post-implementation, echo build, xc7a100tcsg324-1:
 | Bonded IOB | 18 | 210 | 8.57 |
 
 The VGA build lands within 2% of these numbers. Zero block RAM: `InstrMem`, `RegFile`, `DataMem`, and `DCache` all inferred as distributed RAM in LUTs, which is what the 748-LUT-as-memory figure is.
+
+Cached core, 50 MHz bring-up, post-implementation, echo build:
+
+| Resource | Used | Available | % |
+|---|---|---|---|
+| Slice LUTs | 24731 | 63400 | 39.01 |
+| LUT as Memory | 44 | 19000 | 0.23 |
+| Block RAM Tile | 16 | 135 | 11.85 |
+
+The 16 BRAM tiles are `DataMem0-3`, four RAMB36 per bank. `DCache` remains in flops: it needs two write ports and two asynchronous read ports, and no memory primitive on this part provides that combination (Defect 3).
 
 ---
 
