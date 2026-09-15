@@ -48,10 +48,10 @@ logic [31:0] InstrMem [0:16383]; // gives space for 16,384 instructions
 logic [31:0] RegFile [31:0]; // declares the 32 registers
 
 // Data Memory declarations
-logic [31:0] DataMem0 [0:4095]; // main memory consisting of 16 KiB
-logic [31:0] DataMem1 [0:4095]; // main memory consisting of 16 KiB
-logic [31:0] DataMem2 [0:4095]; // main memory consisting of 16 KiB
-logic [31:0] DataMem3 [0:4095]; // main memory consisting of 16 KiB
+(* ram_style = "block" *) logic [31:0] DataMem0 [0:4095]; // main memory consisting of 16 KiB
+(* ram_style = "block" *) logic [31:0] DataMem1 [0:4095]; // main memory consisting of 16 KiB
+(* ram_style = "block" *) logic [31:0] DataMem2 [0:4095]; // main memory consisting of 16 KiB
+(* ram_style = "block" *) logic [31:0] DataMem3 [0:4095]; // main memory consisting of 16 KiB
 
 // Pipelined Register declarations
 // Fetch
@@ -160,7 +160,9 @@ logic MemoryAccess; // tells whether the instruction is a load or store
 logic DMemReady; // fires when DMemCount hits 0
 logic DMemStall; // freezes the pipeline while a DMiss is being serviced
 logic [4:0] DMemCount; // counts down the 15 cycle penalty
-logic [1:0] Beat, HitWay;
+logic [2:0] BeatHold, Beat;
+logic [1:0] HitWay;
+logic [31:0] Scalar0, Scalar1, Scalar2, Scalar3;
 
 // ICache declarations
 logic [31:0] ICache [0:7][0:7]; // 8 sets, 1 way, 8 words
@@ -348,11 +350,12 @@ always_comb
         Victim = {~LRU[ALUResultM[8:6]][2], ~LRU[ALUResultM[8:6]][0]};
     end
 
-always_ff @(posedge Clk, posedge Reset)
+always_ff @(posedge Clk)
     if (Reset) // if Reset, walks DValid and sets everything to 0
         begin
             DCacheState <= DIdle;
             Beat <= 0;
+            BeatHold <= 0;
             for (int i = 0; i < 8; ++i)
                 begin
                     LRU[i] <= 0;
@@ -390,11 +393,13 @@ always_ff @(posedge Clk, posedge Reset)
 
         if (DCacheState == DFetch && DMemReady) // when the state = DFetch and timer has expired
         begin
-            if (Beat == 2'b11)
+            if (Beat == 3'd4)
             begin
                 DValid[ALUResultM[8:6]][Victim] <= 1'b1; // the current slot is set to DValid
                 DTag[ALUResultM[8:6]][Victim] <= ALUResultM[15:9]; // sets the slot's DTag
                 DDirty[ALUResultM[8:6]][Victim] <= 1'b0; // resets dirty after all writes are finished
+                Beat <= 3'd0;
+                BeatHold <= 3'd0;
 
                 if (~Victim[1])
                 begin
@@ -407,21 +412,25 @@ always_ff @(posedge Clk, posedge Reset)
                     LRU[ALUResultM[8:6]][0] <= Victim[0];
                 end
             end
-
-            if (DDirty[ALUResultM[8:6]][Victim] == 1'b1) // IF something is about to rewrite the cache
+            else
             begin
-                DataMem0[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b00}];
-                DataMem1[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b01}];
-                DataMem2[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b10}];
-                DataMem3[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b11}];
+                Beat <= Beat + 3'd1;
             end
 
-            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b00}] <= DataMem0[{ALUResultM[15:6], Beat}];
-            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b01}] <= DataMem1[{ALUResultM[15:6], Beat}];
-            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b10}] <= DataMem2[{ALUResultM[15:6], Beat}];
-            DCache[ALUResultM[8:6]][Victim][{Beat, 2'b11}] <= DataMem3[{ALUResultM[15:6], Beat}];
+            if (Beat < 3'd4)
+            begin
+                Scalar0 <= DataMem0[{ALUResultM[15:6], Beat}];
+                Scalar1 <= DataMem1[{ALUResultM[15:6], Beat}];
+                Scalar2 <= DataMem2[{ALUResultM[15:6], Beat}];
+                Scalar3 <= DataMem3[{ALUResultM[15:6], Beat}];
+            end
 
-            Beat <= Beat + 2'd1;
+            DCache[ALUResultM[8:6]][Victim][{BeatHold, 2'b00}] <= Scalar0;
+            DCache[ALUResultM[8:6]][Victim][{BeatHold, 2'b01}] <= Scalar1;
+            DCache[ALUResultM[8:6]][Victim][{BeatHold, 2'b10}] <= Scalar2;
+            DCache[ALUResultM[8:6]][Victim][{BeatHold, 2'b11}] <= Scalar3;
+
+            BeatHold <= Beat;
         end
 
         // if it's a write to memory, not a peripheral, and there was a hit, WDM
@@ -461,6 +470,24 @@ always_ff @(posedge Clk, posedge Reset)
         end
     end
 
+// exists here because on-board RAM does not accept asynchronous resets
+always_ff @(posedge Clk)
+begin
+    if (DCacheState == DFetch && DMemReady)
+    begin
+        if (DDirty[ALUResultM[8:6]][Victim] == 1'b1) // IF something is about to rewrite the cache
+        begin
+            if (Beat < 3'd4)
+            begin
+                DataMem0[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b00}];
+                DataMem1[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b01}];
+                DataMem2[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b10}];
+                DataMem3[{DTag[ALUResultM[8:6]][Victim], ALUResultM[8:6], Beat}] <= DCache[ALUResultM[8:6]][Victim][{Beat, 2'b11}];
+            end
+        end
+    end
+end
+
 always_comb
     case (DCacheState)
         DIdle:
@@ -471,7 +498,7 @@ always_comb
         DFetch:
         begin
             DMemStall = 1; // stalls the entire time while in DFetch
-            if (DMemReady && Beat == 2'b11) DCacheNextState = DIdle; // once memory is ready, go to idlle
+            if (DMemReady && Beat == 3'd4) DCacheNextState = DIdle; // once memory is ready, go to idlle
             else DCacheNextState = DFetch; // otherwise stay in DFetch
         end
     endcase
@@ -974,100 +1001,6 @@ always_ff @(posedge Clk, posedge Reset)
     else if (RxValid) RxReady <= 1;
     // if it IS a peripheral, if it's the third peripheral slot, and it's a load
     else if (ALUResultM[16] && ALUResultM[3] && (ResultSrcM == 2'b01)) RxReady <= 0;
-
-always_ff @(posedge Clk)
-    begin
-        // if it's a write to memory and not a peripheral, DataMem indexed with
-        // 7 bits gets WDM
-        if (MemWriteM && ~ALUResultM[16] && ~DHit)
-        begin
-            case (Funct3M)
-                3'b000: // sb
-                begin
-                    case (ALUResultM[3:2])
-                        2'b00:
-                        begin
-                            case (ALUResultM[1:0])
-                                2'b00: DataMem0[ALUResultM[15:4]][7:0] <= WDM[7:0];
-                                2'b01: DataMem0[ALUResultM[15:4]][15:8] <= WDM[7:0];
-                                2'b10: DataMem0[ALUResultM[15:4]][23:16] <= WDM[7:0];
-                                2'b11: DataMem0[ALUResultM[15:4]][31:24] <= WDM[7:0];
-                            endcase
-                        end
-                        2'b01:
-                        begin
-                            case (ALUResultM[1:0])
-                            2'b00: DataMem1[ALUResultM[15:4]][7:0] <= WDM[7:0];
-                            2'b01: DataMem1[ALUResultM[15:4]][15:8] <= WDM[7:0];
-                            2'b10: DataMem1[ALUResultM[15:4]][23:16] <= WDM[7:0];
-                            2'b11: DataMem1[ALUResultM[15:4]][31:24] <= WDM[7:0];
-                            endcase
-                        end
-                        2'b10:
-                        begin
-                            case (ALUResultM[1:0])
-                            2'b00: DataMem2[ALUResultM[15:4]][7:0] <= WDM[7:0];
-                            2'b01: DataMem2[ALUResultM[15:4]][15:8] <= WDM[7:0];
-                            2'b10: DataMem2[ALUResultM[15:4]][23:16] <= WDM[7:0];
-                            2'b11: DataMem2[ALUResultM[15:4]][31:24] <= WDM[7:0];
-                            endcase
-                        end
-                        2'b11:
-                            case (ALUResultM[1:0])
-                            2'b00: DataMem3[ALUResultM[15:4]][7:0] <= WDM[7:0];
-                            2'b01: DataMem3[ALUResultM[15:4]][15:8] <= WDM[7:0];
-                            2'b10: DataMem3[ALUResultM[15:4]][23:16] <= WDM[7:0];
-                            2'b11: DataMem3[ALUResultM[15:4]][31:24] <= WDM[7:0];
-                        endcase
-                    endcase
-                end
-                3'b001: // sh
-                    case (ALUResultM[3:2])
-                        2'b00:
-                        begin
-                            case(ALUResultM[1:0])
-                            2'b00: DataMem0[ALUResultM[15:4]][15:0] <= WDM[15:0];
-                            2'b01: DataMem0[ALUResultM[15:4]][23:8] <= WDM[15:0];
-                            2'b10: DataMem0[ALUResultM[15:4]][31:16] <= WDM[15:0];
-                            endcase
-                        end
-                        2'b01:
-                        begin
-                            case(ALUResultM[1:0])
-                            2'b00: DataMem1[ALUResultM[15:4]][15:0] <= WDM[15:0];
-                            2'b01: DataMem1[ALUResultM[15:4]][23:8] <= WDM[15:0];
-                            2'b10: DataMem1[ALUResultM[15:4]][31:16] <= WDM[15:0];
-                            endcase
-                        end
-                        2'b10:
-                        begin
-                            case(ALUResultM[1:0])
-                            2'b00: DataMem2[ALUResultM[15:4]][15:0] <= WDM[15:0];
-                            2'b01: DataMem2[ALUResultM[15:4]][23:8] <= WDM[15:0];
-                            2'b10: DataMem2[ALUResultM[15:4]][31:16] <= WDM[15:0];
-                            endcase
-                        end
-                        2'b11:
-                        begin
-                            case(ALUResultM[1:0])
-                            2'b00: DataMem3[ALUResultM[15:4]][15:0] <= WDM[15:0];
-                            2'b01: DataMem3[ALUResultM[15:4]][23:8] <= WDM[15:0];
-                            2'b10: DataMem3[ALUResultM[15:4]][31:16] <= WDM[15:0];
-                            endcase
-                        end
-                    endcase
-                3'b010: // sw
-                begin
-                    case (ALUResultM[3:2])
-                        2'b00: DataMem0[ALUResultM[15:4]] <= WDM;
-                        2'b01: DataMem1[ALUResultM[15:4]] <= WDM;
-                        2'b10: DataMem2[ALUResultM[15:4]] <= WDM;
-                        2'b11: DataMem3[ALUResultM[15:4]] <= WDM;
-                    endcase
-                end
-            endcase
-        end
-    end
 
 // UART Echo logic
 // if it's a write to memory, it is a peripheral, and it's the first peripheral slot
