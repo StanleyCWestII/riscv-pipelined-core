@@ -595,8 +595,9 @@ Same RTL in every row. The only variable is the program in `memory.hex` and the 
 | Echo, Default Strategy | `echo` | 10.50ns | +0.137ns | 0 / 11144 |
 | Echo, Repo `build.tcl` As Committed | `echo` | 10.00ns | -0.242ns | 52 / 11142 |
 | Cached core, 50 MHz bring-up | `echo` | 20.00ns | **+16.355ns** | 0 |
+| Cached core, 100 MHz attempt | `echo` | 10.00ns | -4.014ns | 35991 / 36110 |
 
-The rows above the cached build are the pre-cache core. The cached core at 100 MHz missed timing in an aborted run (-2.35ns post-place estimate), so the shipped build divides the board clock by two and closes with wide margin. Getting the cached core back to 100 MHz is open work; the suspects are the `RDM` async read mux over the flopped `DCache`, the `StoreWord` read-modify-write path, and the original ALU/forwarding path above.
+The rows above the cached build are the pre-cache core. The cached core's 100 MHz miss is a routed, final number, not an estimate. Its critical path: `DTag` register, through the tag compare and `HitWay` way-select mux, through the `StoreWord` read-modify-write merge, into the `DCache` write data. The shipped build divides the board clock by two and closes with wide margin. Fixing 100 MHz means breaking that path: registering the `DCache` read (one load cycle) or moving `DCache` into BRAM with synchronous reads, which deletes the mux and the flop farm at the same time.
 
 The core is marginal at 100MHz on this part. Whether it closes depends on what is in the instruction ROM.
 
