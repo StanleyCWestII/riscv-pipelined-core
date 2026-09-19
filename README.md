@@ -509,7 +509,7 @@ For no BTB, an important finding is that not-taken happens to be faster than alw
 
 ### 5b. D-cache
 
-The D-cache is built from 8 sets, 4 ways, 16 words per line, 512 words total, write-back, write-allocate, with a direct memory write on store misses.
+The D-cache is built from 8 sets, 4 ways, 16 words per line, 512 words total, write-back, write-allocate. A store miss allocates the line and nothing else: the held store replays as an ordinary store hit once the line is in, so main memory is written only by eviction.
 
 Forced misses are produced by invalidating cache entries while retaining the refill logic. AMAT means average memory access time. This bench calculates it as 1 + data-stall cycles / accesses. Consequently, the D-cache baseline reports 21 cycles per access despite the timer being loaded with 15.
 
@@ -557,7 +557,7 @@ This section is purely to detail the differences in the I-cache and D-cache for 
 | Word Selection | `PCF[4:2]` | `ALUResultM[5:2]` |
 | Writes | Read-only | Store hits dirty the line; dirty victims write back |
 | Miss Handling | Fill eight-word line | Fill sixteen-word line in four four-word transfers |
-| Store Miss | N/A | Direct memory write plus line allocation |
+| Store Miss | N/A | Allocate the line; the held store then replays as a store hit |
 
 ### 5e. Associativity
 
@@ -735,7 +735,7 @@ I-cache miss -> IIdle/IFetch control -> IMemStall -> holds F..W
           +-----------------------------------------------------+
 
 Store hit:  WDM -> D-cache; mark the line dirty
-Store miss: WDM -> selected DataMem bank, and allocate a cache line
+Store miss: stall, allocate the line, then the held store replays as a store hit
 Load hit:   D-cache -> RDM -> byte/halfword selection -> Writeback
 ```
 
