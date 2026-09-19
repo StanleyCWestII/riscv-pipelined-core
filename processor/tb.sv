@@ -83,6 +83,57 @@ module tb;
             if (park_found && dut.ValidE && dut.PCE[7:2] == park_idx) parked = 1'b1;
         end
 
+    // ------------------------------------------------------ retired instructions
+    // Benchmarking only, nothing here is part of the design.
+    //
+    // CPI needs a denominator, and "instructions" has to mean something exact.
+    // An instruction RETIRES when it leaves Writeback, which is the only stage
+    // where its architectural effect is final. ValidW names the instruction
+    // sitting in W; it leaves on the edge where StallW is low. Counting
+    // (ValidW && !StallW) therefore counts each real instruction exactly once:
+    // a frozen W holds the same instruction and is not counted again, and
+    // bubbles injected by FlushE carry ValidW = 0 and are never counted.
+    //
+    // Gated on !parked for the same reason cycles_to_park is: the spin loop
+    // retires a branch every cycle forever and would swamp the count.
+    //
+    // THE DRAIN, which is the whole reason this number is easy to get wrong:
+    // `parked` asserts when the parking branch reaches EXECUTE, and that same
+    // instant is where cycles_to_park stops. But two real instructions are
+    // still in M and W at that moment. Their cycles are already inside
+    // cycles_to_park, so their retirements belong in the denominator too.
+    // Stopping the count at `parked` drops them and inflates CPI.
+    //
+    // So the count keeps running for two more advancing cycles after park,
+    // which lets W drain exactly the instructions M and W were holding. The
+    // parking branch itself is never counted: it is the spin loop, not work.
+    int retired;
+    int drain;                      // cycles of W-drain still owed after park
+
+    always @(negedge clk)
+        if (!reset) begin
+            if (!parked)
+                begin if (dut.ValidW && !dut.StallW) retired++; end
+            else if (drain > 0 && !dut.StallW) begin
+                retired++;
+                drain--;
+            end
+        end
+
+    // Arm the drain on the cycle park is first seen.
+    always @(negedge clk)
+        if (reset)            drain = 2;
+        else if (!parked)     drain = 2;
+
+    // ------------------------------------------------------------- fetches
+    // Counts instruction words actually pulled into Decode, wrong path
+    // included. This is deliberately NOT the CPI denominator; it exists so the
+    // gap between fetched and retired is a measured number instead of a guess.
+    int fetched;
+
+    always @(negedge clk)
+        if (!reset && !parked && !dut.StallF && !dut.IMemStall) fetched++;
+
     // Translate the old linear word address used by the checks into the
     // four-bank DataMem layout: low two word-address bits select the bank.
     function automatic logic [31:0] read_data_word(input int unsigned word_addr);
@@ -143,6 +194,9 @@ module tb;
         mispred_test = 0;
         for (int i = 0; i < 64; i++) begin br_at[i] = 0; mp_at[i] = 0; end
         cycles_to_park = 0;
+        retired        = 0;
+        drain          = 2;
+        fetched        = 0;
         parked         = 1'b0;
 
         reset = 1'b0;
@@ -228,12 +282,14 @@ module tb;
         mispred_total += mispred_test;
 
         if (branch_test == 0)
-            $display("  %-16s %2d/%2d %-9s                                cycles %3d",
-                     current, pass_test, pass_test + fail_test, verdict, cycles_to_park);
+            $display("  %-16s %2d/%2d %-9s                                cycles %3d   retired %3d   CPI %0.2f",
+                     current, pass_test, pass_test + fail_test, verdict, cycles_to_park,
+                     retired, retired ? real'(cycles_to_park) / real'(retired) : 0.0);
         else begin
-            $display("  %-16s %2d/%2d %-9s branches %3d   mispredicts %3d   cycles %3d",
+            $display("  %-16s %2d/%2d %-9s branches %3d   mispredicts %3d   cycles %3d   retired %3d   fetched %3d   CPI %0.2f",
                      current, pass_test, pass_test + fail_test, verdict,
-                     branch_test, mispred_test, cycles_to_park);
+                     branch_test, mispred_test, cycles_to_park,
+                     retired, fetched, retired ? real'(cycles_to_park) / real'(retired) : 0.0);
             for (int i = 0; i < 64; i++)
                 if (br_at[i] > 0 && !(park_found && i[5:0] == park_idx))
                     $display("                     pc 0x%02h   %3d exec  %3d mispred",
